@@ -1,0 +1,15 @@
+{
+  "name": "node-jose-browserified",
+  "version": "0.7.0",
+  "description": "Browserified node-jose",
+  "main": "dist/node-jose.js",
+  "authors": [
+    "jean moldovan <jean.moldovan@gmail.com>"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "node-jose",
+    "browserify"
+  ],
+  "homepage": "https://github.com/jean-moldovan/node-jose-browserified"
+}
