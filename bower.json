@@ -6,7 +6,13 @@
   "authors": [
     "jean moldovan <jean.moldovan@gmail.com>"
   ],
-  "license": "MIT",
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "test",
+    "tests"
+  ],
   "keywords": [
     "node-jose",
     "browserify"

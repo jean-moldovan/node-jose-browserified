@@ -1,4 +1,10162 @@
 !function(e){if("object"==typeof exports&&"undefined"!=typeof module)module.exports=e();else if("function"==typeof define&&define.amd)define([],e);else{var o;"undefined"!=typeof window?o=window:"undefined"!=typeof global?o=global:"undefined"!=typeof self&&(o=self),o.nodeJose=e()}}(function(){var define,module,exports;return (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/aes-cbc-hmac-sha2.js - AES-CBC-HMAC-SHA2 Composited Encryption
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var helpers = require("./helpers.js"),
+    HMAC = require("./hmac.js"),
+    sha = require("./sha.js"),
+    forge = require("../deps/forge.js"),
+    DataBuffer = require("../util/databuffer.js"),
+    util = require("../util");
+
+function checkIv(iv) {
+  if (16 !== iv.length) {
+    throw new Error("invalid iv");
+  }
+}
+
+function commonCbcEncryptFN(size) {
+  // ### 'fallback' implementation -- uses forge
+  var fallback = function(encKey, pdata, iv) {
+    try {
+      checkIv(iv);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var promise = Promise.resolve();
+
+    promise = promise.then(function() {
+      var cipher = forge.cipher.createCipher("AES-CBC", new DataBuffer(encKey));
+      cipher.start({
+        iv: new DataBuffer(iv)
+      });
+
+      // TODO: chunk data
+      cipher.update(new DataBuffer(pdata));
+      if (!cipher.finish()) {
+        return Promise.reject(new Error("encryption failed"));
+      }
+
+      var cdata = cipher.output.native();
+      return cdata;
+    });
+
+    return promise;
+  };
+
+  // ### WebCryptoAPI implementation
+  // TODO: cache CryptoKey sooner
+  var webcrypto = function(encKey, pdata, iv) {
+    try {
+      checkIv(iv);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var promise = Promise.resolve();
+
+    promise = promise.then(function() {
+      var alg = {
+        name: "AES-CBC"
+      };
+      return helpers.subtleCrypto.importKey("raw", encKey, alg, true, ["encrypt"]);
+    });
+    promise = promise.then(function(key) {
+      var alg = {
+        name: "AES-CBC",
+        iv: iv
+      };
+      return helpers.subtleCrypto.encrypt(alg, key, pdata);
+    });
+    promise = promise.then(function(cdata) {
+      // wrap in *augmented* Uint8Array -- Buffer without copies
+      cdata = new Uint8Array(cdata);
+      cdata = Buffer._augment(cdata);
+      return cdata;
+    });
+
+    return promise;
+  };
+
+  // ### NodeJS implementation
+  var nodejs = function(encKey, pdata, iv) {
+    try {
+      checkIv(iv);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var promise = Promise.resolve(pdata);
+
+    promise = promise.then(function(pdata) {
+      var name = "AES-" + size + "-CBC";
+      var cipher = helpers.nodeCrypto.createCipheriv(name, encKey, iv);
+      var cdata = Buffer.concat([
+        cipher.update(pdata),
+        cipher.final()
+      ]);
+      return cdata;
+    });
+
+    return promise;
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+function commonCbcDecryptFN(size) {
+  // ### 'fallback' implementation -- uses forge
+  var fallback = function(encKey, cdata, iv) {
+    // validate inputs
+    try {
+      checkIv(iv);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var promise = Promise.resolve();
+
+    promise = promise.then(function() {
+      var cipher = forge.cipher.createDecipher("AES-CBC", new DataBuffer(encKey));
+      cipher.start({
+        iv: new DataBuffer(iv)
+      });
+
+      // TODO: chunk data
+      cipher.update(new DataBuffer(cdata));
+      if (!cipher.finish()) {
+        return Promise.reject(new Error("encryption failed"));
+      }
+
+      var pdata = cipher.output.native();
+      return pdata;
+    });
+
+    return promise;
+  };
+
+  // ### WebCryptoAPI implementation
+  // TODO: cache CryptoKey sooner
+  var webcrypto = function(encKey, cdata, iv) {
+    // validate inputs
+    try {
+      checkIv(iv);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var promise = Promise.resolve();
+
+    promise = promise.then(function() {
+      var alg = {
+        name: "AES-CBC"
+      };
+      return helpers.subtleCrypto.importKey("raw", encKey, alg, true, ["decrypt"]);
+    });
+    promise = promise.then(function(key) {
+      var alg = {
+        name: "AES-CBC",
+        iv: iv
+      };
+      return helpers.subtleCrypto.decrypt(alg, key, cdata);
+    });
+    promise = promise.then(function(pdata) {
+      // wrap in *augmented* Uint8Array -- Buffer without copies
+      pdata = new Uint8Array(pdata);
+      pdata = Buffer._augment(pdata);
+      return pdata;
+    });
+
+    return promise;
+  };
+
+  // ### NodeJS implementation
+  var nodejs = function(encKey, cdata, iv) {
+    // validate inputs
+    try {
+      checkIv(iv);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var promise = Promise.resolve();
+
+    promise = promise.then(function() {
+      var name = "AES-" + size + "-CBC";
+      var cipher = helpers.nodeCrypto.createDecipheriv(name, encKey, iv);
+      var pdata = Buffer.concat([
+        cipher.update(cdata),
+        cipher.final()
+      ]);
+      return pdata;
+    });
+
+    return promise;
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+function checkKey(key, size) {
+  if ((size << 1) !== (key.length << 3)) {
+    throw new Error("invalid encryption key size");
+  }
+}
+
+function cbcHmacEncryptFN(size) {
+  var commonEncrypt = commonCbcEncryptFN(size);
+  return function(key, pdata, props) {
+    // validate inputs
+    try {
+      checkKey(key, size);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var eKey = key.slice(size / 8),
+        iKey = key.slice(0, size / 8),
+        iv = props.iv || new Buffer(0),
+        adata = props.aad || props.adata || new Buffer(0);
+
+    // STEP 1 -- Encrypt
+    var promise = commonEncrypt(eKey, pdata, iv);
+
+    // STEP 2 -- MAC
+    promise = promise.then(function(cdata){
+      var mdata = Buffer.concat([
+        adata,
+        iv,
+        cdata,
+        helpers.int64ToBuffer(adata.length * 8)
+      ]);
+
+      var promise;
+      promise = HMAC["HS" + (size * 2)].sign(iKey, mdata, {
+        loose: true
+      });
+      promise = promise.then(function(result) {
+        // TODO: move slice to hmac.js
+        var tag = result.mac.slice(0, size / 8);
+        return {
+          data: cdata,
+          tag: tag
+        };
+      });
+      return promise;
+    });
+
+    return promise;
+  };
+}
+
+function cbcHmacDecryptFN(size) {
+  var commonDecrypt = commonCbcDecryptFN(size);
+
+  return function(key, cdata, props) {
+    // validate inputs
+    try {
+      checkKey(key, size);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var eKey = key.slice(size / 8),
+        iKey = key.slice(0, size / 8),
+        iv = props.iv || new Buffer(0),
+        adata = props.aad || props.adata || new Buffer(0),
+        tag = props.tag || props.mac || new Buffer(0);
+
+    var promise = Promise.resolve();
+
+    // STEP 1 -- MAC
+    promise = promise.then(function() {
+      var promise;
+      // construct MAC input
+      var mdata = Buffer.concat([
+        adata,
+        iv,
+        cdata,
+        helpers.int64ToBuffer(adata.length * 8)
+      ]);
+      promise = HMAC["HS" + (size * 2)].verify(iKey, mdata, tag, {
+        loose: true
+      });
+      promise = promise.then(function() {
+        return cdata;
+      }, function() {
+        // failure -- invalid tag error
+        throw new Error("mac check failed");
+      });
+      return promise;
+    });
+
+    // STEP 2 -- Decrypt
+    promise = promise.then(function(){
+      return commonDecrypt(eKey, cdata, iv);
+    });
+
+    return promise;
+  };
+}
+
+var EncryptionLabel = new Buffer("Encryption", "utf8");
+var IntegrityLabel = new Buffer("Integrity", "utf8");
+var DotLabel = new Buffer(".", "utf8");
+
+function generateCek(masterKey, alg, epu, epv) {
+  var masterSize = masterKey.length * 8;
+  var cekSize = masterSize / 2;
+  var promise = Promise.resolve();
+
+  promise = promise.then(function(){
+    var input = Buffer.concat([
+      helpers.int32ToBuffer(1),
+      masterKey,
+      helpers.int32ToBuffer(cekSize),
+      new Buffer(alg, "utf8"),
+      epu,
+      epv,
+      EncryptionLabel
+    ]);
+
+    return input;
+  });
+
+  promise = promise.then( function(input) {
+    return sha["SHA-" + masterSize].digest(input).then(function(digest) {
+      return digest.slice(0, cekSize / 8);
+    });
+  });
+  promise = Promise.resolve(promise);
+
+  return promise;
+}
+
+function generateCik(masterKey, alg, epu, epv) {
+  var masterSize = masterKey.length * 8;
+  var cikSize = masterSize;
+  var promise = Promise.resolve();
+
+  promise = promise.then(function(){
+    var input = Buffer.concat([
+      helpers.int32ToBuffer(1),
+      masterKey,
+      helpers.int32ToBuffer(cikSize),
+      new Buffer(alg, "utf8"),
+      epu,
+      epv,
+      IntegrityLabel
+    ]);
+
+    return input;
+  });
+
+  promise = promise.then( function(input) {
+    return sha["SHA-" + masterSize].digest(input).then(function(digest) {
+      return digest.slice(0, cikSize / 8);
+    });
+  });
+  promise = Promise.resolve(promise);
+
+  return promise;
+}
+
+function concatKdfCbcHmacEncryptFN(size, alg) {
+  var commonEncrypt = commonCbcEncryptFN(size);
+
+  return function(key, pdata, props) {
+    var epu = props.epu || helpers.int32ToBuffer(0),
+        epv = props.epv || helpers.int32ToBuffer(0),
+        iv = props.iv || new Buffer(0),
+        adata = props.aad || props.adata || new Buffer(0),
+        kdata = props.kdata || new Buffer(0);
+
+    // Pre Step 1 -- Generate Keys
+    var promises = [
+      generateCek(key, alg, epu, epv),
+      generateCik(key, alg, epu, epv)
+    ];
+
+    var cek,
+        cik;
+    var promise = Promise.all(promises).then(function(keys) {
+      cek = keys[0];
+      cik = keys[1];
+    });
+
+    // STEP 1 -- Encrypt
+    promise = promise.then(function(){
+      return commonEncrypt(cek, pdata, iv);
+    });
+
+    // STEP 2 -- Mac
+    promise = promise.then(function(cdata){
+      var mdata = Buffer.concat([
+        adata,
+        DotLabel,
+        new Buffer(kdata),
+        DotLabel,
+        new Buffer(util.base64url.encode(iv), "utf8"),
+        DotLabel,
+        new Buffer(util.base64url.encode(cdata), "utf8")
+      ]);
+      return Promise.all([
+        Promise.resolve(cdata),
+        HMAC["HS" + (size * 2)].sign(cik, mdata, { loose: false })
+      ]);
+    });
+    promise = promise.then(function(result){
+      return {
+        data: result[0],
+        tag: result[1].mac
+      };
+    });
+
+    return promise;
+  };
+}
+
+function concatKdfCbcHmacDecryptFN(size, alg) {
+  var commonDecrypt = commonCbcDecryptFN(size);
+
+  return function(key, cdata, props) {
+    var epu = props.epu || helpers.int32ToBuffer(0),
+        epv = props.epv || helpers.int32ToBuffer(0),
+        iv = props.iv || new Buffer(0),
+        adata = props.aad || props.adata || new Buffer(0),
+        kdata = props.kdata || new Buffer(0),
+        tag = props.tag || props.mac || new Buffer(0);
+
+    // Pre Step 1 -- Generate Keys
+    var promises = [
+      generateCek(key, alg, epu, epv),
+      generateCik(key, alg, epu, epv)
+    ];
+
+    var cek,
+        cik;
+    var promise = Promise.all(promises).then(function(keys){
+      cek = keys[0];
+      cik = keys[1];
+    });
+
+
+    // STEP 1 -- MAC
+    promise = promise.then(function() {
+      // construct MAC input
+      var mdata = Buffer.concat([
+        adata,
+        DotLabel,
+        new Buffer(kdata),
+        DotLabel,
+        new Buffer(util.base64url.encode(iv), "utf8"),
+        DotLabel,
+        new Buffer(util.base64url.encode(cdata), "utf8")
+      ]);
+
+      try {
+        return HMAC["HS" + (size * 2)].verify(cik, mdata, tag, {
+          loose: false
+        });
+      } catch (e) {
+        throw new Error("mac check failed");
+      }
+    });
+
+    // STEP 2 -- Decrypt
+    promise = promise.then(function(){
+      return commonDecrypt(cek, cdata, iv);
+    });
+
+    return promise;
+  };
+}
+
+// ### Public API
+// * [name].encrypt
+// * [name].decrypt
+var aesCbcHmacSha2 = {};
+[
+  "A128CBC-HS256",
+  "A192CBC-HS384",
+  "A256CBC-HS512"
+].forEach(function(alg) {
+  var size = parseInt(/A(\d+)CBC-HS(\d+)?/g.exec(alg)[1]);
+  aesCbcHmacSha2[alg] = {
+    encrypt: cbcHmacEncryptFN(size),
+    decrypt: cbcHmacDecryptFN(size)
+  };
+});
+
+[
+  "A128CBC+HS256",
+  "A192CBC+HS384",
+  "A256CBC+HS512"
+].forEach(function(alg) {
+  var size = parseInt(/A(\d+)CBC\+HS(\d+)?/g.exec(alg)[1]);
+  aesCbcHmacSha2[alg] = {
+    encrypt: concatKdfCbcHmacEncryptFN(size, alg),
+    decrypt: concatKdfCbcHmacDecryptFN(size, alg)
+  };
+});
+
+module.exports = aesCbcHmacSha2;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"../util":52,"../util/databuffer.js":51,"./helpers.js":10,"./hmac.js":12,"./sha.js":18,"buffer":204}],2:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/aes-gcm.js - AES-GCM Encryption and Key-Wrapping
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var helpers = require("./helpers.js"),
+    CONSTANTS = require("./constants.js"),
+    GCM = require("../deps/ciphermodes/gcm");
+
+function gcmEncryptFN(size) {
+  function commonChecks(key, iv) {
+    if (size !== (key.length << 3)) {
+       throw new Error("invalid key size");
+    }
+    if (12 !== iv.length) {
+      throw new Error("invalid iv");
+    }
+  }
+
+  // ### 'fallback' implementation -- uses forge
+  var fallback = function(key, pdata, props) {
+    var iv = props.iv || new Buffer(0),
+        adata = props.aad || props.adata || new Buffer(0),
+        cipher,
+        cdata;
+
+    // validate inputs
+    try {
+      commonChecks(key, iv, adata);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    // setup cipher
+    cipher = GCM.createCipher({
+      key: key,
+      iv: iv,
+      additionalData: adata
+    });
+    // ciphertext is the same length as plaintext
+    cdata = new Buffer(pdata.length);
+
+    var promise = new Promise(function(resolve, reject) {
+      var amt = CONSTANTS.CHUNK_SIZE,
+          clen = 0,
+          poff = 0;
+
+      (function doChunk() {
+        var plen = Math.min(amt, pdata.length - poff);
+        clen += cipher.update(pdata,
+                              poff,
+                              plen,
+                              cdata,
+                              clen);
+        poff += plen;
+        if (pdata.length > poff) {
+          setTimeout(doChunk, 0);
+          return;
+        }
+
+        // finish it
+        clen += cipher.finish(cdata, clen);
+        if (clen !== pdata.length) {
+          reject(new Error("encryption failed"));
+          return;
+        }
+
+        // resolve with output
+        var tag = cipher.tag;
+        resolve({
+          data: cdata,
+          tag: tag
+        });
+      })();
+    });
+
+    return promise;
+  };
+
+  // ### WebCryptoAPI implementation
+  // TODO: cache CryptoKey sooner
+  var webcrypto = function(key, pdata, props) {
+    var iv = props.iv || new Buffer(0),
+        adata = props.aad || props.adata || new Buffer(0);
+
+    try {
+      commonChecks(key, iv, adata);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var alg = {
+      name: "AES-GCM"
+    };
+    var promise;
+    promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["encrypt"]);
+    promise = promise.then(function(key) {
+      alg.iv = iv;
+      alg.tagLength = 128;
+      if (adata.length) {
+        alg.additionalData = adata;
+      }
+
+      return helpers.subtleCrypto.encrypt(alg, key, pdata);
+    });
+    promise = promise.then(function(result) {
+      var tagStart = result.byteLength - 16;
+
+      // wrap in *augmented* Uint8Array -- Buffer without copies
+      var tag = result.slice(tagStart);
+      tag = new Uint8Array(tag);
+      tag = Buffer._augment(tag);
+
+      // wrap in *augmented* Uint8Array -- Buffer without copies
+      var cdata = result.slice(0, tagStart);
+      cdata = new Uint8Array(cdata);
+      cdata = Buffer._augment(cdata);
+
+      return {
+        data: cdata,
+        tag: tag
+      };
+    });
+
+    return promise;
+  };
+
+  // ### NodeJS implementation
+  var nodejs = function(key, pdata, props) {
+    var iv = props.iv || new Buffer(0),
+        adata = props.aad || props.adata || new Buffer(0);
+
+    try {
+      commonChecks(key, iv, adata);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var alg = "aes-" + (key.length * 8) + "-gcm";
+    var cipher;
+    try {
+      cipher = helpers.nodeCrypto.createCipheriv(alg, key, iv);
+    } catch (err) {
+      throw new Error("unsupported algorithm: " + alg);
+    }
+    if ("function" !== typeof cipher.setAAD) {
+      throw new Error("unsupported algorithm: " + alg);
+    }
+    if (adata.length) {
+      cipher.setAAD(adata);
+    }
+
+    var cdata = Buffer.concat([
+      cipher.update(pdata),
+      cipher.final()
+    ]);
+    var tag = cipher.getAuthTag();
+
+    return {
+      data: cdata,
+      tag: tag
+    };
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+function gcmDecryptFN(size) {
+  function commonChecks(key, iv, tag) {
+    if (size !== (key.length << 3)) {
+      throw new Error("invalid key size");
+    }
+    if (12 !== iv.length) {
+      throw new Error("invalid iv");
+    }
+    if (16 !== tag.length) {
+      throw new Error("invalid tag length");
+    }
+  }
+
+  // ### fallback implementation -- uses forge
+  var fallback = function(key, cdata, props) {
+    var adata = props.aad || props.adata || new Buffer(0),
+        iv = props.iv || new Buffer(0),
+        tag = props.tag || props.mac || new Buffer(0),
+        cipher,
+        pdata;
+
+    // validate inputs
+    try {
+      commonChecks(key, iv, tag);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    // setup cipher
+    cipher = GCM.createDecipher({
+      key: key,
+      iv: iv,
+      additionalData: adata,
+      tag: tag
+    });
+    // plaintext is the same length as ciphertext
+    pdata = new Buffer(cdata.length);
+
+    var promise = new Promise(function(resolve, reject) {
+      var amt = CONSTANTS.CHUNK_SIZE,
+          plen = 0,
+          coff = 0;
+
+      (function doChunk() {
+        var clen = Math.min(amt, cdata.length - coff);
+        plen += cipher.update(cdata,
+                              coff,
+                              clen,
+                              pdata,
+                              plen);
+        coff += clen;
+        if (cdata.length > coff) {
+          setTimeout(doChunk, 0);
+          return;
+        }
+
+        try {
+          plen += cipher.finish(pdata, plen);
+        } catch (err) {
+          reject(new Error("decryption failed"));
+          return;
+        }
+
+        if (plen !== cdata.length) {
+          reject(new Error("decryption failed"));
+          return;
+        }
+
+        // resolve with output
+        resolve(pdata);
+      })();
+    });
+
+    return promise;
+  };
+
+  // ### WebCryptoAPI implementation
+  // TODO: cache CryptoKey sooner
+  var webcrypto = function(key, cdata, props) {
+    var adata = props.aad || props.adata || new Buffer(0),
+        iv = props.iv || new Buffer(0),
+        tag = props.tag || props.mac || new Buffer(0);
+
+    // validate inputs
+    try {
+      commonChecks(key, iv, tag);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var alg = {
+      name: "AES-GCM"
+    };
+    var promise;
+    promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["decrypt"]);
+    promise = promise.then(function(key) {
+      alg.iv = iv;
+      alg.tagLength = 128;
+      if (adata.length) {
+        alg.additionalData = adata;
+      }
+
+      // concatenate cdata and tag
+      cdata = Buffer.concat([cdata, tag], cdata.length + tag.length);
+
+      return helpers.subtleCrypto.decrypt(alg, key, cdata);
+    });
+    promise = promise.then(function(pdata) {
+      // wrap *augmented* Uint8Array -- Buffer without copies
+      pdata = new Uint8Array(pdata);
+      pdata = Buffer._augment(pdata);
+      return pdata;
+    });
+
+    return promise;
+  };
+
+  var nodejs = function(key, cdata, props) {
+    var adata = props.aad || props.adata || new Buffer(0),
+        iv = props.iv || new Buffer(0),
+        tag = props.tag || props.mac || new Buffer(0);
+
+    // validate inputs
+    try {
+      commonChecks(key, iv, tag);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var alg = "aes-" + (key.length * 8) + "-gcm";
+    var cipher;
+    try {
+      cipher = helpers.nodeCrypto.createDecipheriv(alg, key, iv);
+    } catch(err) {
+      throw new Error("unsupported algorithm: " + alg);
+    }
+    if ("function" !== typeof cipher.setAAD) {
+      throw new Error("unsupported algorithm: " + alg);
+    }
+    cipher.setAuthTag(tag);
+    if (adata.length) {
+      cipher.setAAD(adata);
+    }
+
+    try {
+      var pdata = Buffer.concat([
+        cipher.update(cdata),
+        cipher.final()
+      ]);
+
+      return pdata;
+    } catch (err) {
+      throw new Error("decryption failed");
+    }
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+// ### Public API
+// * [name].encrypt
+// * [name].decrypt
+var aesGcm = {};
+[
+  "A128GCM",
+  "A192GCM",
+  "A256GCM",
+  "A128GCMKW",
+  "A192GCMKW",
+  "A256GCMKW"
+].forEach(function(alg) {
+  var size = parseInt(/A(\d+)GCM(?:KW)?/g.exec(alg)[1]);
+  aesGcm[alg] = {
+    encrypt: gcmEncryptFN(size),
+    decrypt: gcmDecryptFN(size)
+  };
+});
+
+module.exports = aesGcm;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/ciphermodes/gcm":20,"./constants.js":5,"./helpers.js":10,"buffer":204}],3:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/aes-kw.js - AES-KW Key-Wrapping
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var helpers = require("./helpers.js"),
+    forge = require("../deps/forge.js"),
+    DataBuffer = require("../util/databuffer.js");
+
+var A0 = new Buffer("a6a6a6a6a6a6a6a6", "hex");
+
+// ### helpers
+function xor(a, b) {
+  var len = Math.max(a.length, b.length);
+  var result = new Buffer(len);
+  for (var idx = 0; len > idx; idx++) {
+    result[idx] = (a[idx] || 0) ^ (b[idx] || 0);
+  }
+  return result;
+}
+
+function split(input, size) {
+  var output = [];
+  for (var idx = 0; input.length > idx; idx += size) {
+    output.push(input.slice(idx, idx + size));
+  }
+  return output;
+}
+
+function longToBigEndian(input) {
+  var hi = Math.floor(input / 4294967296),
+      lo = input % 4294967296;
+  var output = new Buffer(8);
+  output[0] = 0xff & (hi >>> 24);
+  output[1] = 0xff & (hi >>> 16);
+  output[2] = 0xff & (hi >>> 8);
+  output[3] = 0xff & (hi >>> 0);
+  output[4] = 0xff & (lo >>> 24);
+  output[5] = 0xff & (lo >>> 16);
+  output[6] = 0xff & (lo >>> 8);
+  output[7] = 0xff & (lo >>> 0);
+  return output;
+}
+
+function kwEncryptFN(size) {
+  function commonChecks(key, data) {
+    if (size !== (key.length << 3)) {
+      throw new Error("invalid key size");
+    }
+    if (0 < data.length && 0 !== (data.length % 8)) {
+      throw new Error("invalid data length");
+    }
+  }
+
+  // ### 'fallback' implementation -- uses forge
+  var fallback = function(key, pdata) {
+    try {
+      commonChecks(key, pdata);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    // setup cipher
+    var cipher = forge.cipher.createCipher("AES", new DataBuffer(key));
+
+    // split input into chunks
+    var R = split(pdata, 8);
+    var A,
+        B,
+        count;
+    A = A0;
+    for (var jdx = 0; 6 > jdx; jdx++) {
+      for (var idx = 0; R.length > idx; idx++) {
+        count = (R.length * jdx) + idx + 1;
+        B = Buffer.concat([A, R[idx]]);
+        cipher.start();
+        cipher.update(new DataBuffer(B));
+        cipher.finish();
+        B = cipher.output.native();
+
+        A = xor(B.slice(0, 8),
+                longToBigEndian(count));
+        R[idx] = B.slice(8, 16);
+      }
+    }
+    R = [A].concat(R);
+    var cdata = Buffer.concat(R);
+    return Promise.resolve({
+      data: cdata
+    });
+  };
+  // ### WebCryptoAPI implementation
+  var webcrypto = function(key, pdata) {
+    try {
+      commonChecks(key, pdata);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var alg = {
+      name: "AES-KW"
+    };
+    var promise = [
+      helpers.subtleCrypto.importKey("raw", pdata, { name: "HMAC", hash: "SHA-256" }, true, ["sign"]),
+      helpers.subtleCrypto.importKey("raw", key, alg, true, ["wrapKey"])
+    ];
+    promise = Promise.all(promise);
+    promise = promise.then(function(keys) {
+      return helpers.subtleCrypto.wrapKey("raw",
+                                          keys[0], // key
+                                          keys[1], // wrappingKey
+                                          alg);
+    });
+    promise = promise.then(function(result) {
+      // wrap in *augmented* Uint8Array -- Buffer without copies
+      result = new Uint8Array(result);
+      result = Buffer._augment(result);
+
+      return {
+        data: result
+      };
+    });
+    return promise;
+  };
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+function kwDecryptFN(size) {
+  function commonChecks(key, data) {
+    if (size !== (key.length << 3)) {
+      throw new Error("invalid key size");
+    }
+    if (0 < (data.length - 8) && 0 !== (data.length % 8)) {
+      throw new Error("invalid data length");
+    }
+  }
+
+  // ### 'fallback' implementation -- uses forge
+  var fallback = function(key, cdata) {
+    try {
+      commonChecks(key, cdata);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    // setup cipher
+    var cipher = forge.cipher.createDecipher("AES", new DataBuffer(key));
+
+    // prepare inputs
+    var R = split(cdata, 8),
+        A,
+        B,
+        count;
+    A = R[0];
+    R = R.slice(1);
+    for (var jdx = 5; 0 <= jdx; --jdx) {
+      for (var idx = R.length - 1; 0 <= idx; --idx) {
+        count = (R.length * jdx) + idx + 1;
+        B = xor(A,
+                longToBigEndian(count));
+        B = Buffer.concat([B, R[idx]]);
+        cipher.start();
+        cipher.update(new DataBuffer(B));
+        cipher.finish();
+        B = cipher.output.native();
+
+        A = B.slice(0, 8);
+        R[idx] = B.slice(8, 16);
+      }
+    }
+    if (A.toString() !== A0.toString()) {
+      return Promise.reject(new Error("decryption failed"));
+    }
+    var pdata = Buffer.concat(R);
+    return Promise.resolve(pdata);
+  };
+  // ### WebCryptoAPI implementation
+  var webcrypto = function(key, cdata) {
+    try {
+      commonChecks(key, cdata);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    var alg = {
+      name: "AES-KW"
+    };
+    var promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["unwrapKey"]);
+    promise = promise.then(function(key) {
+      return helpers.subtleCrypto.unwrapKey("raw", cdata, key, alg, {name: "HMAC", hash: "SHA-256"}, true, ["sign"]);
+    });
+    promise = promise.then(function(result) {
+      // unwrapped CryptoKey -- extract raw
+      return helpers.subtleCrypto.exportKey("raw", result);
+    });
+    promise = promise.then(function(result) {
+      // wrap in *augmented* Uint8Array -- Buffer without copies
+      result = new Uint8Array(result);
+      result = Buffer._augment(result);
+      return result;
+    });
+    return promise;
+  };
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+
+// ### Public API
+// * [name].encrypt
+// * [name].decrypt
+var aesKw = {};
+[
+  "A128KW",
+  "A192KW",
+  "A256KW"
+].forEach(function(alg) {
+  var size = parseInt(/A(\d+)KW/g.exec(alg)[1]);
+  aesKw[alg] = {
+    encrypt: kwEncryptFN(size),
+    decrypt: kwDecryptFN(size)
+  };
+});
+
+module.exports = aesKw;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"../util/databuffer.js":51,"./helpers.js":10,"buffer":204}],4:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/concat.js - Concat Key Derivation
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var CONSTANTS = require("./constants.js"),
+    sha = require("./sha.js");
+
+function concatDeriveFn(name) {
+  name = name.replace("CONCAT-", "");
+
+  // NOTE: no nodejs/webcrypto/fallback model, since ConcatKDF is
+  //       implemented using the SHA algorithms
+
+  var fn = function(key, props) {
+    props = props || {};
+
+    var keyLen = props.length,
+        hashLen = CONSTANTS.HASHLENGTH[name];
+    if (!keyLen) {
+      return Promise.reject(new Error("invalid key length"));
+    }
+
+    // setup otherInfo
+    if (!props.otherInfo) {
+      return Promise.reject(new Error("invalid otherInfo"));
+    }
+    var otherInfo = props.otherInfo;
+
+    var op = sha[name].digest;
+    var N = Math.ceil(keyLen / hashLen),
+        idx = 0,
+        okm = [];
+    function step() {
+      if (N === idx++) {
+        return Buffer.concat(okm).slice(0, keyLen);
+      }
+
+      var T = new Buffer(4 + key.length + otherInfo.length);
+      T.writeUInt32BE(idx, 0);
+      key.copy(T, 4);
+      otherInfo.copy(T, 4 + key.length);
+      return op(T).then(function(result) {
+        okm.push(result);
+        return step();
+      });
+    }
+
+    return step();
+  };
+
+  return fn;
+}
+
+// Public API
+// * [name].derive
+var concat = {};
+[
+  "CONCAT-SHA-1",
+  "CONCAT-SHA-256",
+  "CONCAT-SHA-384",
+  "CONCAT-SHA-512"
+].forEach(function(name) {
+  concat[name] = {
+    derive: concatDeriveFn(name)
+  };
+});
+
+module.exports = concat;
+
+}).call(this,require("buffer").Buffer)
+},{"./constants.js":5,"./sha.js":18,"buffer":204}],5:[function(require,module,exports){
+/*!
+ * algorithms/constants.js - Constants used in Cryptographic Algorithms
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+ "use strict";
+
+module.exports = {
+  CHUNK_SIZE: 1024,
+  HASHLENGTH: {
+    "SHA-1": 160,
+    "SHA-256": 256,
+    "SHA-384": 384,
+    "SHA-512": 512
+  },
+  ENCLENGTH: {
+    "AES-128-CBC": 128,
+    "AES-192-CBC": 192,
+    "AES-256-CBC": 256,
+    "AES-128-KW": 128,
+    "AES-192-KW": 192,
+    "AES-256-KW": 256
+  },
+  KEYLENGTH: {
+    "A128CBC-HS256": 256,
+    "A192CBC-HS384": 384,
+    "A256CBC-HS512": 512,
+    "A128CBC+HS256": 256,
+    "A192CBC+HS384": 384,
+    "A256CBC+HS512": 512,
+    "A128GCM": 128,
+    "A192GCM": 192,
+    "A256GCM": 256,
+    "A128KW": 128,
+    "A192KW": 192,
+    "A256KW": 256,
+    "ECDH-ES+A128KW": 128,
+    "ECDH-ES+A192KW": 192,
+    "ECDH-EC+A256KW": 256
+  },
+  NONCELENGTH: {
+    "A128CBC-HS256": 128,
+    "A192CBC-HS384": 128,
+    "A256CBC-HS512": 128,
+    "A128CBC+HS256": 128,
+    "A192CBC+HS384": 128,
+    "A256CBC+HS512": 128,
+    "A128GCM": 96,
+    "A192GCM": 96,
+    "A256GCM": 96
+  }
+};
+
+},{}],6:[function(require,module,exports){
+/*!
+ * algorithms/dir.js - Direct key mode
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+function dirEncryptFN(key) {
+  // NOTE: pdata unused
+  // NOTE: props unused
+  return Promise.resolve({
+    data: key,
+    once: true,
+    direct: true
+  });
+}
+function dirDecryptFN(key) {
+  // NOTE: pdata unused
+  // NOTE: props unused
+  return Promise.resolve(key);
+}
+
+// ### Public API
+// * [name].encrypt
+// * [name].decrypt
+var direct = {
+  dir: {
+    encrypt: dirEncryptFN,
+    decrypt: dirDecryptFN
+  }
+};
+
+module.exports = direct;
+
+},{}],7:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/ec-util.js - Elliptic Curve Utility Functions
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var clone = require("lodash.clone"),
+    ecc = require("../deps/ecc"),
+    forge = require("../deps/forge.js"),
+    util = require("../util");
+
+var EC_KEYSIZES = {
+  "P-256": 256,
+  "P-384": 384,
+  "P-521": 521
+};
+
+function convertToForge(key, isPublic) {
+  var parts = isPublic ?
+              ["x", "y"] :
+              ["d"];
+  parts = parts.map(function(f) {
+    return new forge.jsbn.BigInteger(key[f].toString("hex"), 16);
+  });
+  // prefix with curve
+  parts = [key.crv].concat(parts);
+  var fn = isPublic ?
+           ecc.asPublicKey :
+           ecc.asPrivateKey;
+  return fn.apply(ecc, parts);
+}
+
+function convertToJWK(key, isPublic) {
+  var result = clone(key);
+  var parts = isPublic ?
+              ["x", "y"] :
+              ["x", "y", "d"];
+  parts.forEach(function(f) {
+    result[f] = util.base64url.encode(result[f]);
+  });
+
+  // remove potentially troublesome properties
+  delete result.key_ops;
+  delete result.use;
+  delete result.alg;
+
+  if (isPublic) {
+    delete result.d;
+  }
+
+  return result;
+}
+
+function convertToObj(key, isPublic) {
+  var result = clone(key);
+  var parts = isPublic ?
+              ["x", "y"] :
+              ["d"];
+  parts.forEach(function(f) {
+    // assume string if base64url-encoded
+    result[f] = util.asBuffer(result[f], "base64url");
+  });
+
+  return result;
+}
+
+var UNCOMPRESSED = new Buffer([0x04]);
+function convertToBuffer(key, isPublic) {
+  key = convertToObj(key, isPublic);
+  var result = isPublic ?
+               Buffer.concat([UNCOMPRESSED, key.x, key.y]) :
+               key.d;
+  return result;
+}
+
+function curveSize(crv) {
+  return EC_KEYSIZES[crv || ""] || NaN;
+}
+
+module.exports = {
+  convertToForge: convertToForge,
+  convertToJWK: convertToJWK,
+  convertToObj: convertToObj,
+  convertToBuffer: convertToBuffer,
+  curveSize: curveSize
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/ecc":25,"../deps/forge.js":27,"../util":52,"buffer":204,"lodash.clone":68}],8:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/ecdh.js - Elliptic Curve Diffie-Hellman algorithms
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var clone = require("lodash.clone"),
+    merge = require("../util/merge"),
+    omit = require("lodash.omit"),
+    pick = require("lodash.pick"),
+    util = require("../util"),
+    ecUtil = require("./ec-util.js"),
+    hkdf = require("./hkdf.js"),
+    concat = require("./concat.js"),
+    aesKw = require("./aes-kw.js"),
+    helpers = require("./helpers.js"),
+    CONSTANTS = require("./constants.js");
+
+function idealHash(curve) {
+  switch (curve) {
+    case "P-256":
+      return "SHA-256";
+    case "P-384":
+      return "SHA-384";
+    case "P-521":
+      return "SHA-512";
+    default:
+      throw new Error("unsupported curve: " + curve);
+  }
+}
+
+// ### Exported
+var ecdh = module.exports = {};
+
+// ### Derivation algorithms
+// ### "raw" ECDH
+function ecdhDeriveFn() {
+  var alg = {
+    name: "ECDH"
+  };
+
+  // ### fallback implementation -- uses ecc + forge
+  var fallback = function(key, props) {
+    props = props || {};
+    var keyLen = props.length || 0;
+    // assume {key} is privateKey
+    var privKey = ecUtil.convertToForge(key, false);
+    // assume {props.public} is publicKey
+    if (!props.public) {
+      return Promise.reject(new Error("invalid EC public key"));
+    }
+    var pubKey = ecUtil.convertToForge(props.public, true);
+    var secret = privKey.computeSecret(pubKey);
+    if (keyLen) {
+      // truncate to requested key length
+      if (secret.length < keyLen) {
+        return Promise.reject(new Error("key length too large: " + keyLen));
+      }
+      secret = secret.slice(0, keyLen);
+    }
+    return Promise.resolve(secret);
+  };
+
+  // ### WebCryptoAPI implementation
+  // TODO: cache CryptoKey sooner
+  var webcrypto = function(key, props) {
+    key = key || {};
+    props = props || {};
+
+    var keyLen = props.length || 0,
+        algParams = merge(clone(alg), {
+          namedCurve: key.crv
+        });
+
+    // assume {key} is privateKey
+    if (!keyLen) {
+      // calculate key length from private key size
+      keyLen = key.d.length;
+    }
+    var privKey = ecUtil.convertToJWK(key, false);
+    privKey = helpers.subtleCrypto.importKey("jwk",
+                                             privKey,
+                                             algParams,
+                                             false,
+                                             [ "deriveBits" ]);
+
+    // assume {props.public} is publicKey
+    if (!props.public) {
+      return Promise.reject(new Error("invalid EC public key"));
+    }
+    var pubKey = ecUtil.convertToJWK(props.public, true);
+    pubKey = helpers.subtleCrypto.importKey("jwk",
+                                            pubKey,
+                                            algParams,
+                                            false,
+                                            []);
+
+    var promise = Promise.all([privKey, pubKey]);
+    promise = promise.then(function(keypair) {
+      var privKey = keypair[0],
+          pubKey = keypair[1];
+
+      var algParams = merge(clone(alg), {
+        public: pubKey
+      });
+      return helpers.subtleCrypto.deriveBits(algParams, privKey, keyLen * 8);
+    });
+    promise = promise.then(function(result) {
+      result = new Uint8Array(result);
+      Buffer._augment(result);
+      return result;
+    });
+    return promise;
+  };
+
+  var nodejs = function(key, props) {
+    if ("function" !== typeof helpers.nodeCrypto.createECDH) {
+      throw new Error("unsupported algorithm: ECDH");
+    }
+
+    props = props || {};
+    var keyLen = props.length || 0;
+    var curve;
+    switch (key.crv) {
+      case "P-256":
+        curve = "prime256v1";
+        break;
+      case "P-384":
+        curve = "secp384r1";
+        break;
+      case "P-521":
+        curve = "secp521r1";
+        break;
+      default:
+        return Promise.reject(new Error("invalid curve: " + curve));
+    }
+
+    // assume {key} is privateKey
+    var privKey = ecUtil.convertToBuffer(key, false);
+
+    // assume {props.public} is publicKey
+    var pubKey = ecUtil.convertToBuffer(props.public, true);
+
+    var ecdh = helpers.nodeCrypto.createECDH(curve);
+    // dummy call so computeSecret doesn't fail
+    ecdh.generateKeys();
+    ecdh.setPrivateKey(privKey);
+    var secret = ecdh.computeSecret(pubKey);
+    if (keyLen) {
+      if (secret.length < keyLen) {
+        return Promise.reject(new Error("key length too large: " + keyLen));
+      }
+      secret = secret.slice(0, keyLen);
+    }
+    return Promise.resolve(secret);
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+function ecdhConcatDeriveFn() {
+  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
+  //       implemented using other primitives
+
+  var fn = function(key, props) {
+    props = props || {};
+
+    var hash;
+    try {
+      hash = props.hash || idealHash(key.crv);
+      if (!hash) {
+        throw new Error("invalid hash: " + hash);
+      }
+      hash.toUpperCase();
+    } catch (ex) {
+      return Promise.reject(ex);
+    }
+
+    var params = ["public"];
+    // derive shared secret
+    // NOTE: whitelist items from {props} for ECDH
+    var promise = ecdh.ECDH.derive(key, pick(props, params));
+    // expand
+    promise = promise.then(function(shared) {
+      // NOTE: blacklist items from {props} for ECDH
+      return concat["CONCAT-" + hash].derive(shared, omit(props, params));
+    });
+    return promise;
+  };
+
+  return fn;
+}
+
+function ecdhHkdfDeriveFn() {
+  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
+  //       implemented using other primitives
+
+  var fn = function(key, props) {
+    props = props || {};
+
+    var hash;
+    try {
+      hash = props.hash || idealHash(key.crv);
+      if (!hash) {
+        throw new Error("invalid hash: " + hash);
+      }
+      hash.toUpperCase();
+    } catch (ex) {
+      return Promise.reject(ex);
+    }
+
+    var params = ["public"];
+    // derive shared secret
+    // NOTE: whitelist items from {props} for ECDH
+    var promise = ecdh.ECDH.derive(key, pick(props, params));
+    // extract-and-expand
+    promise = promise.then(function(shared) {
+      // NOTE: blacklist items from {props} for ECDH
+      return hkdf["HKDF-" + hash].derive(shared, omit(props, params));
+    });
+    return promise;
+  };
+
+  return fn;
+}
+
+// ### Wrap/Unwrap algorithms
+function doEcdhesCommonDerive(privKey, pubKey, props) {
+  function prependLen(input) {
+    return Buffer.concat([
+      helpers.int32ToBuffer(input.length),
+      input
+    ]);
+  }
+
+  var algId = props.algorithm || "",
+      keyLen = CONSTANTS.KEYLENGTH[algId],
+      apu = util.asBuffer(props.apu || "", "base64url"),
+      apv = util.asBuffer(props.apv || "", "base64url");
+  var otherInfo = Buffer.concat([
+    prependLen(new Buffer(algId, "utf8")),
+    prependLen(apu),
+    prependLen(apv),
+    helpers.int32ToBuffer(keyLen)
+  ]);
+
+  var params = {
+    public: pubKey,
+    length: keyLen / 8,
+    hash: "SHA-256",
+    otherInfo: otherInfo
+  };
+  return ecdh["ECDH-CONCAT"].derive(privKey, params);
+}
+
+function ecdhesDirEncryptFn() {
+  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
+  //       implemented using other primitives
+  var fn = function(key, pdata, props) {
+    props = props || {};
+
+    // {props.epk} is private
+    if (!props.epk || !props.epk.d) {
+      return Promise.reject(new Error("missing ephemeral private key"));
+    }
+    var epk = ecUtil.convertToObj(props.epk, false);
+
+    // {key} is public
+    if (!key || !key.x || !key.y) {
+      return Promise.reject(new Error("missing static public key"));
+    }
+    var spk = ecUtil.convertToObj(key, true);
+
+    // derive ECDH shared
+    var promise = doEcdhesCommonDerive(epk, spk, {
+      algorithm: props.enc,
+      apu: props.apu,
+      apv: props.apv
+    });
+    promise = promise.then(function(shared) {
+      return {
+        data: shared,
+        once: true,
+        direct: true
+      };
+    });
+    return promise;
+  };
+
+  return fn;
+}
+function ecdhesDirDecryptFn() {
+  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
+  //       implemented using other primitives
+  var fn = function(key, cdata, props) {
+    props = props || {};
+
+    // {props.epk} is public
+    if (!props.epk || !props.epk.x || !props.epk.y) {
+      return Promise.reject(new Error("missing ephemeral public key"));
+    }
+    var epk = ecUtil.convertToObj(props.epk, true);
+
+    // {key} is private
+    if (!key || !key.d) {
+      return Promise.reject(new Error("missing static private key"));
+    }
+    var spk = ecUtil.convertToObj(key, false);
+
+    // derive ECDH shared
+    var promise = doEcdhesCommonDerive(spk, epk, {
+      algorithm: props.enc,
+      apu: props.apu,
+      apv: props.apv
+    });
+    promise = promise.then(function(shared) {
+      return shared;
+    });
+    return promise;
+  };
+
+  return fn;
+}
+
+function ecdhesKwEncryptFn(wrap) {
+  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
+  //       implemented using other primitives
+  var fn = function(key, pdata, props) {
+    props = props || {};
+
+    // {props.epk} is private
+    if (!props.epk || !props.epk.d) {
+      return Promise.reject(new Error("missing ephemeral private key"));
+    }
+    var epk = ecUtil.convertToObj(props.epk, false);
+
+    // {key} is public
+    if (!key || !key.x || !key.y) {
+      return Promise.reject(new Error("missing static public key"));
+    }
+    var spk = ecUtil.convertToObj(key, true);
+
+    // derive ECDH shared
+    var promise = doEcdhesCommonDerive(epk, spk, {
+      algorithm: props.alg,
+      apu: props.apu,
+      apv: props.apv
+    });
+    promise = promise.then(function(shared) {
+      // wrap provided key with ECDH shared
+      return wrap(shared, pdata);
+    });
+    return promise;
+  };
+
+  return fn;
+}
+
+function ecdhesKwDecryptFn(unwrap) {
+  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
+  //       implemented using other primitives
+  var fn = function(key, cdata, props) {
+    props = props || {};
+
+    // {props.epk} is public
+    if (!props.epk || !props.epk.x || !props.epk.y) {
+      return Promise.reject(new Error("missing ephemeral public key"));
+    }
+    var epk = ecUtil.convertToObj(props.epk, true);
+
+    // {key} is private
+    if (!key || !key.d) {
+      return Promise.reject(new Error("missing static private key"));
+    }
+    var spk = ecUtil.convertToObj(key, false);
+
+    // derive ECDH shared
+    var promise = doEcdhesCommonDerive(spk, epk, {
+      algorithm: props.alg,
+      apu: props.apu,
+      apv: props.apv
+    });
+    promise = promise.then(function(shared) {
+      // unwrap provided key with ECDH shared
+      return unwrap(shared, cdata);
+    });
+    return promise;
+  };
+
+  return fn;
+}
+
+// ### Public API
+// * [name].derive
+[
+  "ECDH",
+  "ECDH-HKDF",
+  "ECDH-CONCAT"
+].forEach(function(name) {
+  var kdf = /^ECDH(?:-(\w+))?$/g.exec(name || "")[1];
+  var op = ecdh[name] = ecdh[name] || {};
+  switch (kdf || "") {
+    case "CONCAT":
+      op.derive = ecdhConcatDeriveFn();
+      break;
+    case "HKDF":
+      op.derive = ecdhHkdfDeriveFn();
+      break;
+    case "":
+      op.derive = ecdhDeriveFn();
+      break;
+    default:
+      op.derive = null;
+  }
+});
+
+// * [name].encrypt
+// * [name].decrypt
+[
+  "ECDH-ES",
+  "ECDH-ES+A128KW",
+  "ECDH-ES+A192KW",
+  "ECDH-ES+A256KW"
+].forEach(function(name) {
+  var kw = /^ECDH-ES(?:\+(.+))?/g.exec(name || "")[1];
+  var op = ecdh[name] = ecdh[name] || {};
+  if (!kw) {
+    op.encrypt = ecdhesDirEncryptFn();
+    op.decrypt = ecdhesDirDecryptFn();
+  } else {
+    kw = aesKw[kw];
+    if (kw) {
+      op.encrypt = ecdhesKwEncryptFn(kw.encrypt);
+      op.decrypt = ecdhesKwDecryptFn(kw.decrypt);
+    } else {
+      op.ecrypt = op.decrypt = null;
+    }
+  }
+});
+//*/
+
+}).call(this,require("buffer").Buffer)
+},{"../util":52,"../util/merge":53,"./aes-kw.js":3,"./concat.js":4,"./constants.js":5,"./ec-util.js":7,"./helpers.js":10,"./hkdf.js":11,"buffer":204,"lodash.clone":68,"lodash.omit":110,"lodash.pick":133}],9:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/ecdsa.js - Elliptic Curve Digitial Signature Algorithms
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var ecUtil = require("./ec-util.js"),
+    helpers = require("./helpers.js"),
+    sha = require("./sha.js");
+
+function idealCurve(hash) {
+  switch (hash) {
+    case "SHA-256":
+      return "P-256";
+    case "SHA-384":
+      return "P-384";
+    case "SHA-512":
+      return "P-521";
+    default:
+      throw new Error("unsupported hash: " + hash);
+  }
+}
+
+function ecdsaSignFN(hash) {
+  var curve = idealCurve(hash);
+
+  // ### Fallback implementation -- uses forge
+  var fallback = function(key, pdata /*, props */) {
+    if (curve !== key.crv) {
+      return Promise.reject(new Error("invalid curve"));
+    }
+    var pk = ecUtil.convertToForge(key, false);
+
+    var promise;
+    // generate hash
+    promise = sha[hash].digest(pdata);
+    // sign hash
+    promise = promise.then(function(result) {
+      result = pk.sign(result);
+      result = Buffer.concat([result.r, result.s]);
+      return {
+        data: pdata,
+        mac: result
+      };
+    });
+    return promise;
+  };
+
+  // ### WebCrypto API implementation
+  var webcrypto = function(key, pdata /*, props */) {
+    if (curve !== key.crv) {
+      return Promise.reject(new Error("invalid curve"));
+    }
+    var pk = ecUtil.convertToJWK(key, false);
+
+    var promise;
+    var alg = {
+      name: "ECDSA",
+      namedCurve: pk.crv,
+      hash: {
+        name: hash
+      }
+    };
+    promise = helpers.subtleCrypto.importKey("jwk",
+                                             pk,
+                                             alg,
+                                             true,
+                                             [ "sign" ]);
+    promise = promise.then(function(key) {
+      return helpers.subtleCrypto.sign(alg, key, pdata);
+    });
+    promise = promise.then(function(result) {
+      result = new Uint8Array(result);
+      result = Buffer._augment(result);
+      return {
+        data: pdata,
+        mac: result
+      };
+    });
+    return promise;
+  };
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+
+function ecdsaVerifyFN(hash) {
+  var curve = idealCurve(hash);
+
+  // ### Fallback implementation -- uses forge
+  var fallback = function(key, pdata, mac /*, props */) {
+    if (curve !== key.crv) {
+      return Promise.reject(new Error("invalid curve"));
+    }
+    var pk = ecUtil.convertToForge(key, true);
+
+    var promise;
+    // generate hash
+    promise = sha[hash].digest(pdata);
+    // verify hash
+    promise = promise.then(function(result) {
+      var len = mac.length / 2;
+      var rs = {
+        r: mac.slice(0, len),
+        s: mac.slice(len)
+      };
+      if (!pk.verify(result, rs)) {
+        return Promise.reject(new Error("verification failed"));
+      }
+      return {
+        data: pdata,
+        mac: mac,
+        valid: true
+      };
+    });
+    return promise;
+  };
+
+  // ### WebCrypto API implementation
+  var webcrypto = function(key, pdata, mac /* , props */) {
+    if (curve !== key.crv) {
+      return Promise.reject(new Error("invalid curve"));
+    }
+    var pk = ecUtil.convertToJWK(key, true);
+
+    var promise;
+    var alg = {
+      name: "ECDSA",
+      namedCurve: pk.crv,
+      hash: {
+        name: hash
+      }
+    };
+    promise = helpers.subtleCrypto.importKey("jwk",
+                                             pk,
+                                             alg,
+                                             true,
+                                             ["verify"]);
+    promise = promise.then(function(key) {
+      return helpers.subtleCrypto.verify(alg, key, mac, pdata);
+    });
+    promise = promise.then(function(result) {
+      if (!result) {
+        return Promise.reject(new Error("verification failed"));
+      }
+      return {
+        data: pdata,
+        mac: mac,
+        valid: true
+      };
+    });
+    return promise;
+  };
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+
+// ### Public API
+var ecdsa = {};
+
+// * [name].sign
+// * [name].verify
+[
+  "ES256",
+  "ES384",
+  "ES512"
+].forEach(function(name) {
+  var hash = name.replace(/ES(\d+)/g, function(m, size) {
+    return "SHA-" + size;
+  });
+  ecdsa[name] = {
+    sign: ecdsaSignFN(hash),
+    verify: ecdsaVerifyFN(hash)
+  };
+});
+
+module.exports = ecdsa;
+
+}).call(this,require("buffer").Buffer)
+},{"./ec-util.js":7,"./helpers.js":10,"./sha.js":18,"buffer":204}],10:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/helpers.js - Internal functions and fields used in Cryptographic
+ * Algorithms
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+if (typeof Promise === "undefined") {
+  require("es6-promise").polyfill();
+}
+
+// ###
+exports.int32ToBuffer = function(v, b) {
+  b = b || new Buffer(4);
+  b[0] = (v >>> 24) & 0xff;
+  b[1] = (v >>> 16) & 0xff;
+  b[2] = (v >>> 8) & 0xff;
+  b[3] = v & 0xff;
+  return b;
+};
+
+var MAX_INT32 = Math.pow(2, 32);
+exports.int64ToBuffer = function(v, b) {
+  b = b || new Buffer(8);
+  var hi = Math.floor(v / MAX_INT32),
+      lo = v % MAX_INT32;
+  hi = exports.int32ToBuffer(hi);
+  lo = exports.int32ToBuffer(lo);
+  b = Buffer.concat([hi, lo]);
+  return b;
+};
+
+// ### crypto and DOMException in browsers ###
+/* global crypto:false, DOMException:false */
+
+function getCryptoSubtle() {
+  if ("undefined" !== typeof crypto) {
+    if ("undefined" !== typeof crypto.subtle) {
+      return crypto.subtle;
+    }
+    if ("undefined" !== typeof crypto.webkitSubtle) {
+      return crypto.webkitSubtle;
+    }
+  }
+
+  return undefined;
+}
+function getCryptoNodeJS() {
+  var crypto;
+  try {
+    var pkgname = "crypto";
+    crypto = require(pkgname);
+  } catch (err) {
+    return undefined;
+  }
+
+  return crypto;
+}
+
+var supported = {};
+Object.defineProperty(exports, "subtleCrypto", {
+  get: function() {
+    var result;
+
+    if ("subtleCrypto" in supported) {
+      result = supported.subtleCrypto;
+    } else {
+      result = supported.subtleCrypto = getCryptoSubtle();
+    }
+
+    return result;
+  },
+  enumerable: true
+});
+Object.defineProperty(exports, "nodeCrypto", {
+  get: function() {
+    var result;
+
+    if ("nodeCrypto" in supported) {
+      result = supported.nodeCrypto;
+    } else {
+      result = supported.nodeCrypto = getCryptoNodeJS();
+    }
+
+    return result;
+  },
+  enumerable: true
+});
+
+exports.setupFallback = function(nodejs, webcrypto, fallback) {
+  var impl;
+
+  if (nodejs && exports.nodeCrypto) {
+    impl = function main() {
+      var args = arguments,
+          promise;
+
+      function check(err) {
+        if (0 === err.message.indexOf("unsupported algorithm:")) {
+          impl = fallback;
+          return impl.apply(null, args);
+        }
+
+        return Promise.reject(err);
+      }
+
+      try {
+        promise = Promise.resolve(nodejs.apply(null, args));
+      } catch(err) {
+        promise = check(err);
+      }
+
+      return promise;
+    };
+  } else if (webcrypto && exports.subtleCrypto) {
+    impl = function main() {
+      var args = arguments,
+         promise;
+
+      function check(err) {
+        if (err.code === DOMException.NOT_SUPPORTED_ERR ||
+            // Firefox rejects some operations erroneously complaining about inputs
+            err.message === "Only ArrayBuffer and ArrayBufferView objects can be passed as CryptoOperationData" ||
+            // MS Edge rejects with not an Error
+            !(err instanceof Error)) {
+          // not actually supported -- always use fallback
+          impl = fallback;
+          return impl.apply(null, args);
+        }
+
+       return Promise.reject(err);
+      }
+
+      try {
+        promise = webcrypto.apply(null, args);
+        promise = promise.catch(check);
+      } catch(err) {
+        promise = check(err);
+      }
+
+      return promise;
+    };
+  } else {
+    impl = fallback;
+  }
+
+  return impl;
+};
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":204,"es6-promise":55}],11:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/hkdf.js - HMAC-based Extract-and-Expand Key Derivation
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var CONSTANTS = require("./constants.js"),
+    hmac = require("./hmac.js");
+
+function hkdfDeriveFn(name) {
+  var hash = name.replace("HKDF-", ""),
+      op = name.replace("HKDF-SHA-", "HS");
+
+  // NOTE: no nodejs/webcrypto/fallback model, since this HKDF is
+  //       implemented using the HMAC algorithms
+
+  var fn = function(key, props) {
+    var hashLen = CONSTANTS.HASHLENGTH[hash] / 8;
+
+    if ("string" === typeof op) {
+      op = hmac[op].sign;
+    }
+
+    // prepare options
+    props = props || {};
+    var salt = props.salt;
+    if (!salt || 0 === salt.length) {
+      salt = new Buffer(hashLen);
+      salt.fill(0);
+    }
+    var info = props.info || new Buffer(0);
+    var keyLen = props.length || hashLen;
+
+    var promise;
+
+    // Setup Expansion
+    var N = Math.ceil(keyLen / hashLen),
+        okm = [],
+        idx = 0;
+    function expand(key, T) {
+      if (N === idx++) {
+        return Buffer.concat(okm).slice(0, keyLen);
+      }
+
+      if (!T) {
+        T = new Buffer(0);
+      }
+      T = Buffer.concat([T, info, new Buffer([idx])]);
+      T = op(key, T, { loose: true });
+      T = T.then(function(result) {
+        T = result.mac;
+        okm.push(T);
+
+        return expand(key, T);
+      });
+      return T;
+    }
+
+    // Step 1: Extract
+    promise = op(salt, key, { loose: true });
+    promise = promise.then(function(result) {
+      // Step 2: Expand
+      return expand(result.mac);
+    });
+
+    return promise;
+  };
+
+  return fn;
+}
+
+// Public API
+// * [name].derive
+var hkdf = {};
+[
+  "HKDF-SHA-1",
+  "HKDF-SHA-256",
+  "HKDF-SHA-384",
+  "HKDF-SHA-512"
+].forEach(function(name) {
+  hkdf[name] = {
+    derive: hkdfDeriveFn(name)
+  };
+});
+
+module.exports = hkdf;
+
+}).call(this,require("buffer").Buffer)
+},{"./constants.js":5,"./hmac.js":12,"buffer":204}],12:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/hmac.js - HMAC-based "signatures"
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var CONSTANTS = require("./constants"),
+    forge = require("../deps/forge.js"),
+    DataBuffer = require("../util/databuffer.js"),
+    helpers = require("./helpers.js");
+
+function hmacSignFN(name) {
+  var md = name.replace("HS", "SHA").toLowerCase(),
+      hash = name.replace("HS", "SHA-");
+
+  // ### Fallback Implementation -- uses forge
+  var fallback = function(key, pdata, props) {
+    props = props || {};
+    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
+      return Promise.reject(new Error("invalid key length"));
+    }
+
+    var sig = forge.hmac.create();
+    sig.start(md, key.toString("binary"));
+    sig.update(pdata);
+    sig = sig.digest().native();
+
+    return Promise.resolve({
+      data: pdata,
+      mac: sig
+    });
+  };
+
+  // ### WebCryptoAPI Implementation
+  var webcrypto = function(key, pdata, props) {
+    props = props || {};
+    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
+      return Promise.reject(new Error("invalid key length"));
+    }
+
+    var alg = {
+      name: "HMAC",
+      hash: {
+        name: hash
+      }
+    };
+    var promise;
+    promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["sign"]);
+    promise = promise.then(function(key) {
+      return helpers.subtleCrypto.sign(alg, key, pdata);
+    });
+    promise = promise.then(function(result) {
+      // wrap in *augmented* Uint8Array - Buffer without copies
+      var sig = new Uint8Array(result);
+      sig = Buffer._augment(sig);
+      return {
+        data: pdata,
+        mac: sig
+      };
+    });
+
+    return promise;
+  };
+
+  // ### NodeJS implementation
+  var nodejs = function(key, pdata, props) {
+    props = props || {};
+    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
+      return Promise.reject(new Error("invalid key length"));
+    }
+
+    var hmac = helpers.nodeCrypto.createHmac(md, key);
+    hmac.update(pdata);
+
+    var sig = hmac.digest();
+    return {
+      data: pdata,
+      mac: sig
+    };
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+function hmacVerifyFN(name) {
+  var md = name.replace("HS", "SHA").toLowerCase(),
+      hash = name.replace("HS", "SHA-");
+
+  function compare(loose, expected, actual) {
+    var len = loose ? expected.length : CONSTANTS.HASHLENGTH[hash] / 8,
+        valid = true;
+    for (var idx = 0; len > idx; idx++) {
+      valid = valid && (expected[idx] === actual[idx]);
+    }
+    return valid;
+  }
+
+  // ### Fallback Implementation -- uses forge
+  var fallback = function(key, pdata, mac, props) {
+    props = props || {};
+    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
+      return Promise.reject(new Error("invalid key length"));
+    }
+
+    var vrfy = forge.hmac.create();
+    vrfy.start(md, new DataBuffer(key));
+    vrfy.update(pdata);
+    vrfy = vrfy.digest().native();
+
+    if (compare(props.loose, mac, vrfy)) {
+      return Promise.resolve({
+        data: pdata,
+        mac: mac,
+        valid: true
+      });
+    } else {
+      return Promise.reject(new Error("verification failed"));
+    }
+  };
+
+  var webcrypto = function(key, pdata, mac, props) {
+    props = props || {};
+    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
+      return Promise.reject(new Error("invalid key length"));
+    }
+
+    var alg = {
+      name: "HMAC",
+      hash: {
+        name: hash
+      }
+    };
+    var promise;
+    if (props.loose) {
+      promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["sign"]);
+      promise = promise.then(function(key) {
+        return helpers.subtleCrypto.sign(alg, key, pdata);
+      });
+      promise = promise.then(function(result) {
+        // wrap in *augmented* Uint8Array - Buffer without copies
+        var sig = new Uint8Array(result);
+        sig = Buffer._augment(sig);
+        return compare(true, mac, sig);
+      });
+    } else {
+      promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["verify"]);
+      promise = promise.then(function(key) {
+        return helpers.subtleCrypto.verify(alg, key, mac, pdata);
+      });
+    }
+    promise = promise.then(function(result) {
+      if (!result) {
+        return Promise.reject(new Error("verifaction failed"));
+      }
+
+      return {
+        data: pdata,
+        mac: mac,
+        valid: true
+      };
+    });
+
+    return promise;
+  };
+
+  var nodejs = function(key, pdata, mac, props) {
+    props = props || {};
+    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
+      return Promise.reject(new Error("invalid key length"));
+    }
+
+    var hmac = helpers.nodeCrypto.createHmac(md, key);
+    hmac.update(pdata);
+
+    var sig = hmac.digest();
+    if (!compare(props.loose, mac, sig)) {
+      throw new Error("verification failed");
+    }
+    return {
+      data: pdata,
+      mac: sig,
+      valid: true
+    };
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+// ### Public API
+// * [name].sign
+// * [name].verify
+var hmac = {};
+[
+  "HS1",
+  "HS256",
+  "HS384",
+  "HS512"
+].forEach(function(alg) {
+  hmac[alg] = {
+    sign: hmacSignFN(alg),
+    verify: hmacVerifyFN(alg)
+  };
+});
+
+module.exports = hmac;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"../util/databuffer.js":51,"./constants":5,"./helpers.js":10,"buffer":204}],13:[function(require,module,exports){
+/*!
+ * algorithms/index.js - Cryptographic Algorithms Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+// setup implementations
+var implementations = [
+  require("./aes-cbc-hmac-sha2.js"),
+  require("./aes-gcm.js"),
+  require("./aes-kw.js"),
+  require("./concat.js"),
+  require("./dir.js"),
+  require("./ecdh.js"),
+  require("./ecdsa.js"),
+  require("./hkdf.js"),
+  require("./hmac.js"),
+  require("./pbes2.js"),
+  require("./rsaes.js"),
+  require("./rsassa.js"),
+  require("./sha.js")
+];
+
+var ALGS_DIGEST = {};
+var ALGS_DERIVE = {};
+var ALGS_SIGN = {},
+    ALGS_VRFY = {};
+var ALGS_ENC = {},
+    ALGS_DEC = {};
+
+implementations.forEach(function(mod) {
+  Object.keys(mod).forEach(function(alg) {
+    var op = mod[alg];
+
+    if ("function" === typeof op.encrypt) {
+      ALGS_ENC[alg] = op.encrypt;
+    }
+    if ("function" === typeof op.decrypt) {
+      ALGS_DEC[alg] = op.decrypt;
+    }
+    if ("function" === typeof op.sign) {
+      ALGS_SIGN[alg] = op.sign;
+    }
+    if ("function" === typeof op.verify) {
+      ALGS_VRFY[alg] = op.verify;
+    }
+    if ("function" === typeof op.digest) {
+      ALGS_DIGEST[alg] = op.digest;
+    }
+    if ("function" === typeof op.derive) {
+      ALGS_DERIVE[alg] = op.derive;
+    }
+  });
+});
+
+// public API
+exports.digest = function(alg, data, props) {
+  var op = ALGS_DIGEST[alg];
+  if (!op) {
+    return Promise.reject(new Error("unsupported algorithm: " + alg));
+  }
+
+  return op(data, props);
+};
+
+exports.derive = function(alg, key, props) {
+  var op = ALGS_DERIVE[alg];
+  if (!op) {
+    return Promise.reject(new Error("unsupported algorithm: " + alg));
+  }
+
+  return op(key, props);
+};
+
+exports.sign = function(alg, key, pdata, props) {
+  var op = ALGS_SIGN[alg];
+  if (!op) {
+    return Promise.reject(new Error("unsupported algorithm: " + alg));
+  }
+
+  return op(key, pdata, props || {});
+};
+
+exports.verify = function(alg, key, pdata, mac, props) {
+  var op = ALGS_VRFY[alg];
+  if (!op) {
+    return Promise.reject(new Error("unsupported algorithm: " + alg));
+  }
+
+  return op(key, pdata, mac, props || {});
+};
+
+exports.encrypt = function(alg, key, pdata, props) {
+  var op = ALGS_ENC[alg];
+  if (!op) {
+    return Promise.reject(new Error("unsupported algorithm: " + alg));
+  }
+
+  return op(key, pdata, props || {});
+};
+
+exports.decrypt = function(alg, key, cdata, props) {
+  var op = ALGS_DEC[alg];
+  if (!op) {
+    return Promise.reject(new Error("unsupported algorithm: " + alg));
+  }
+
+  return op(key, cdata, props || {});
+};
+
+},{"./aes-cbc-hmac-sha2.js":1,"./aes-gcm.js":2,"./aes-kw.js":3,"./concat.js":4,"./dir.js":6,"./ecdh.js":8,"./ecdsa.js":9,"./hkdf.js":11,"./hmac.js":12,"./pbes2.js":14,"./rsaes.js":16,"./rsassa.js":17,"./sha.js":18}],14:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/pbes2.js - Password-Based Encryption (v2) Algorithms
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../deps/forge.js"),
+    util = require("../util"),
+    helpers = require("./helpers.js"),
+    CONSTANTS = require("./constants.js"),
+    KW = require("./aes-kw.js");
+
+var NULL_BUFFER = new Buffer([0]);
+
+function fixSalt(hmac, kw, salt) {
+  var alg = "PBES2-" + hmac + "+" + kw;
+  var output = [
+    new Buffer(alg, "utf8"),
+    NULL_BUFFER,
+    salt
+  ];
+  return Buffer.concat(output);
+}
+
+function pbes2EncryptFN(hmac, kw) {
+  var keyLen = CONSTANTS.KEYLENGTH[kw] / 8;
+
+  var fallback = function(key, pdata, props) {
+    props = props || {};
+
+    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
+        itrs = props.p2c || 0;
+
+    if (0 >= itrs) {
+      return Promise.reject(new Error("invalid iteration count"));
+    }
+
+    if (8 > salt.length) {
+      return Promise.reject(new Error("salt too small"));
+    }
+    salt = fixSalt(hmac, kw, salt);
+
+    var promise;
+
+    // STEP 1: derive shared key
+    promise = new Promise(function(resolve, reject) {
+      var md = forge.md[hmac.replace("HS", "SHA").toLowerCase()].create();
+      var cb = function(err, dk) {
+        if (err) {
+          reject(err);
+        } else {
+          dk = new Buffer(dk, "binary");
+          resolve(dk);
+        }
+      };
+
+      forge.pkcs5.pbkdf2(key.toString("binary"),
+                         salt.toString("binary"),
+                         itrs,
+                         keyLen,
+                         md,
+                         cb);
+    });
+
+    // STEP 2: encrypt cek
+    promise = promise.then(function(dk) {
+      return KW[kw].encrypt(dk, pdata);
+    });
+    return promise;
+  };
+
+  // NOTE: WebCrypto API missing until there's better support
+  var webcrypto = null;
+
+  var nodejs = function(key, pdata, props) {
+    if (6 > helpers.nodeCrypto.pbkdf2.length) {
+      throw new Error("unsupported algorithm: PBES2-" + hmac + "+" + kw);
+    }
+
+    props = props || {};
+
+    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
+        itrs = props.p2c || 0;
+
+    if (0 >= itrs) {
+      return Promise.reject(new Error("invalid iteration count"));
+    }
+
+    if (8 > salt.length) {
+      return Promise.reject(new Error("salt too small"));
+    }
+    salt = fixSalt(hmac, kw, salt);
+
+    var promise;
+
+    // STEP 1: derive shared key
+    var hash = hmac.replace("HS", "SHA");
+    promise = new Promise(function(resolve, reject) {
+      function cb(err, dk) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(dk);
+        }
+      }
+      helpers.nodeCrypto.pbkdf2(key, salt, itrs, keyLen, hash, cb);
+    });
+
+    // STEP 2: encrypt cek
+    promise = promise.then(function(dk) {
+      return KW[kw].encrypt(dk, pdata);
+    });
+
+    return promise;
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+function pbes2DecryptFN(hmac, kw) {
+  var keyLen = CONSTANTS.KEYLENGTH[kw] / 8;
+
+  var fallback = function(key, cdata, props) {
+    props = props || {};
+
+    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
+        itrs = props.p2c || 0;
+
+    if (0 >= itrs) {
+      return Promise.reject(new Error("invalid iteration count"));
+    }
+
+    if (8 > salt.length) {
+      return Promise.reject(new Error("salt too small"));
+    }
+    salt = fixSalt(hmac, kw, salt);
+
+    var promise;
+
+    // STEP 1: derived shared key
+    promise = new Promise(function(resolve, reject) {
+      var md = forge.md[hmac.replace("HS", "SHA").toLowerCase()].create();
+      var cb = function(err, dk) {
+        if (err) {
+          reject(err);
+        } else {
+          dk = new Buffer(dk, "binary");
+          resolve(dk);
+        }
+      };
+
+      forge.pkcs5.pbkdf2(key.toString("binary"),
+                         salt.toString("binary"),
+                         itrs,
+                         keyLen,
+                         md,
+                         cb);
+    });
+
+    // STEP 2: decrypt cek
+    promise = promise.then(function(dk) {
+      return KW[kw].decrypt(dk, cdata);
+    });
+    return promise;
+  };
+
+  // NOTE: WebCrypto API missing until there's better support
+  var webcrypto = null;
+
+  var nodejs = function(key, cdata, props) {
+    if (6 > helpers.nodeCrypto.pbkdf2.length) {
+      throw new Error("unsupported algorithm: PBES2-" + hmac + "+" + kw);
+    }
+
+    props = props || {};
+
+    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
+        itrs = props.p2c || 0;
+
+    if (0 >= itrs) {
+      return Promise.reject(new Error("invalid iteration count"));
+    }
+
+    if (8 > salt.length) {
+      return Promise.reject(new Error("salt too small"));
+    }
+    salt = fixSalt(hmac, kw, salt);
+
+    var promise;
+
+    // STEP 1: derive shared key
+    var hash = hmac.replace("HS", "SHA");
+    promise = new Promise(function(resolve, reject) {
+      function cb(err, dk) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(dk);
+        }
+      }
+      helpers.nodeCrypto.pbkdf2(key, salt, itrs, keyLen, hash, cb);
+    });
+
+    // STEP 2: decrypt cek
+    promise = promise.then(function(dk) {
+      return KW[kw].decrypt(dk, cdata);
+    });
+
+    return promise;
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+// ### Public API
+// [name].encrypt
+// [name].decrypt
+var pbes2 = {};
+[
+  "PBES2-HS256+A128KW",
+  "PBES2-HS384+A192KW",
+  "PBES2-HS512+A256KW"
+].forEach(function(alg) {
+  var parts = /PBES2-(HS\d+)\+(A\d+KW)/g.exec(alg);
+  var hmac = parts[1],
+      kw = parts[2];
+  pbes2[alg] = {
+    encrypt: pbes2EncryptFN(hmac, kw),
+    decrypt: pbes2DecryptFN(hmac, kw)
+  };
+});
+
+module.exports = pbes2;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"../util":52,"./aes-kw.js":3,"./constants.js":5,"./helpers.js":10,"buffer":204}],15:[function(require,module,exports){
+/*!
+ * algorithms/rsa-util.js - RSA Utility Functions
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var clone = require("lodash.clone"),
+    forge = require("../deps/forge.js"),
+    util = require("../util");
+
+// ### RSA-specific Helpers
+function convertToForge(key, isPublic) {
+  var parts = isPublic ?
+              ["n", "e"] :
+              ["n", "e", "d", "p", "q", "dp", "dq", "qi"];
+  parts = parts.map(function(f) {
+    return new forge.jsbn.BigInteger(key[f].toString("hex"), 16);
+  });
+
+  var fn = isPublic ?
+           forge.pki.rsa.setPublicKey :
+           forge.pki.rsa.setPrivateKey;
+  return fn.apply(forge.pki.rsa, parts);
+}
+function convertToJWK(key, isPublic) {
+  var result = clone(key);
+  var parts = isPublic ?
+              ["n", "e"] :
+              ["n", "e", "d", "p", "q", "dp", "dq", "qi"];
+  parts.forEach(function(f) {
+    result[f] = util.base64url.encode(result[f]);
+  });
+
+  // remove potentially troublesome properties
+  delete result.key_ops;
+  delete result.use;
+  delete result.alg;
+
+  if (isPublic) {
+    delete result.d;
+    delete result.p;
+    delete result.q;
+    delete result.dp;
+    delete result.dq;
+    delete result.qi;
+  }
+
+  return result;
+}
+
+module.exports = {
+  convertToForge: convertToForge,
+  convertToJWK: convertToJWK
+};
+
+},{"../deps/forge.js":27,"../util":52,"lodash.clone":68}],16:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/rsassa.js - RSA Signatures
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../deps/forge.js"),
+    helpers = require("./helpers.js"),
+    DataBuffer = require("../util/databuffer.js"),
+    rsaUtil = require("./rsa-util.js");
+
+// ### RSAES-PKCS1-v1_5
+
+// ### RSAES-OAEP
+function rsaesEncryptFn(name) {
+  var alg = {
+    name: name
+  };
+
+  if ("RSA-OAEP-256" === name) {
+    alg.name = "RSA-OAEP";
+    alg.hash = {
+      name: "SHA-256"
+    };
+  } else if ("RSA-OAEP" === name) {
+    alg.hash = {
+      name: "SHA-1"
+    };
+  } else {
+    alg.name = "RSAES-PKCS1-v1_5";
+  }
+
+  // ### Fallback Implementation -- uses forge
+  var fallback = function(key, pdata) {
+    // convert pdata to byte string
+    pdata = new DataBuffer(pdata).bytes();
+
+    // encrypt it
+    var pki = rsaUtil.convertToForge(key, true),
+        params = {};
+    if ("RSA-OAEP" === alg.name) {
+      params.md = alg.hash.name.toLowerCase().replace(/\-/g, "");
+      params.md = forge.md[params.md].create();
+    }
+    var cdata = pki.encrypt(pdata, alg.name.toUpperCase(), params);
+
+    // convert cdata to Buffer
+    cdata = new DataBuffer(cdata).native();
+
+    return Promise.resolve({
+      data: cdata
+    });
+  };
+
+  // ### WebCryptoAPI Implementation
+  var webcrypto;
+  if ("RSAES-PKCS1-v1_5" !== alg.name) {
+    webcrypto = function(key, pdata) {
+      key = rsaUtil.convertToJWK(key, true);
+      var promise;
+      promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["encrypt"]);
+      promise = promise.then(function(key) {
+        return helpers.subtleCrypto.encrypt(alg, key, pdata);
+      });
+      promise = promise.then(function(result) {
+        // wrap in *augmented* Uint8Array - Buffer without copies
+        var cdata = new Uint8Array(result);
+        cdata = Buffer._augment(cdata);
+        return {
+          data: cdata
+        };
+      });
+
+      return promise;
+    };
+  } else {
+    webcrypto = null;
+  }
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+
+function rsaesDecryptFn(name) {
+  var alg = {
+    name: name
+  };
+
+  if ("RSA-OAEP-256" === name) {
+    alg.name = "RSA-OAEP";
+    alg.hash = {
+      name: "SHA-256"
+    };
+  } else if ("RSA-OAEP" === name) {
+    alg.hash = {
+      name: "SHA-1"
+    };
+  } else {
+    alg.name = "RSAES-PKCS1-v1_5";
+  }
+
+  // ### Fallback Implementation -- uses forge
+  var fallback = function(key, cdata) {
+    // convert cdata to byte string
+    cdata = new DataBuffer(cdata).bytes();
+
+    // decrypt it
+    var pki = rsaUtil.convertToForge(key, false),
+        params = {};
+    if ("RSA-OAEP" === alg.name) {
+      params.md = alg.hash.name.toLowerCase().replace(/\-/g, "");
+      params.md = forge.md[params.md].create();
+    }
+    var pdata = pki.decrypt(cdata, alg.name.toUpperCase(), params);
+
+    // convert pdata to Buffer
+    pdata = new DataBuffer(pdata).native();
+
+    return Promise.resolve(pdata);
+  };
+
+  // ### WebCryptoAPI Implementation
+  var webcrypto;
+  if ("RSAES-PKCS1-v1_5" !== alg.name) {
+    webcrypto = function(key, pdata) {
+      key = rsaUtil.convertToJWK(key, false);
+      var promise;
+      promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["decrypt"]);
+      promise = promise.then(function(key) {
+        return helpers.subtleCrypto.decrypt(alg, key, pdata);
+      });
+      promise = promise.then(function(result) {
+        // wrap in *augmented* Uint8Array - Buffer without copies
+        var pdata = new Uint8Array(result);
+        pdata = Buffer._augment(pdata);
+        return pdata;
+      });
+
+      return promise;
+    };
+  } else {
+    webcrypto = null;
+  }
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+
+// ### Public API
+// * [name].encrypt
+// * [name].decrypt
+var rsaes = {};
+[
+  "RSA-OAEP",
+  "RSA-OAEP-256",
+  "RSA1_5"
+].forEach(function(name) {
+  rsaes[name] = {
+    encrypt: rsaesEncryptFn(name),
+    decrypt: rsaesDecryptFn(name)
+  };
+});
+
+module.exports = rsaes;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"../util/databuffer.js":51,"./helpers.js":10,"./rsa-util.js":15,"buffer":204}],17:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/rsassa.js - RSA Signatures
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../deps/forge.js"),
+    CONSTANTS = require("./constants"),
+    helpers = require("./helpers.js"),
+    rsaUtil = require("./rsa-util.js");
+
+// ### RSASSA-PKCS1-v1_5
+
+function rsassaV15SignFn(name) {
+  var md = name.replace("RS", "SHA").toLowerCase(),
+      hash = name.replace("RS", "SHA-");
+
+  var alg = {
+    name: "RSASSA-PKCS1-V1_5",
+    hash: {
+      name: hash
+    }
+  };
+
+  // ### Fallback Implementation -- uses forge
+  var fallback = function(key, pdata) {
+    // create the digest
+    var digest = forge.md[md].create();
+    digest.start();
+    digest.update(pdata);
+
+    // sign it
+    var pki = rsaUtil.convertToForge(key, false);
+    var sig = pki.sign(digest, "RSASSA-PKCS1-V1_5");
+    sig = new Buffer(sig, "binary");
+
+    return Promise.resolve({
+      data: pdata,
+      mac: sig
+    });
+  };
+
+  // ### WebCryptoAPI Implementation
+  var webcrypto = function(key, pdata) {
+    key = rsaUtil.convertToJWK(key, false);
+    var promise;
+    promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["sign"]);
+    promise = promise.then(function(key) {
+      return helpers.subtleCrypto.sign(alg, key, pdata);
+    });
+    promise = promise.then(function(result) {
+      // wrap in *augmented* Uint8Array - Buffer without copies
+      var sig = new Uint8Array(result);
+      sig = Buffer._augment(sig);
+      return {
+        data: pdata,
+        mac: sig
+      };
+    });
+
+    return promise;
+  };
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+
+function rsassaV15VerifyFn(name) {
+  var md = name.replace("RS", "SHA").toLowerCase(),
+      hash = name.replace("RS", "SHA-");
+  var alg = {
+    name: "RSASSA-PKCS1-V1_5",
+    hash: {
+      name: hash
+    }
+  };
+
+  // ### Fallback implementation -- uses forge
+  var fallback = function(key, pdata, mac) {
+    // create the digest
+    var digest = forge.md[md].create();
+    digest.start();
+    digest.update(pdata);
+    digest = digest.digest().bytes();
+
+    // verify it
+    var pki = rsaUtil.convertToForge(key, true);
+    var sig = mac.toString("binary");
+    var result = pki.verify(digest, sig, "RSASSA-PKCS1-V1_5");
+    if (!result) {
+      return Promise.reject(new Error("verification failed"));
+    }
+    return Promise.resolve({
+      data: pdata,
+      mac: mac,
+      valid: true
+    });
+  };
+
+  // ### WebCryptoAPI Implementation
+  var webcrypto = function(key, pdata, mac) {
+    key = rsaUtil.convertToJWK(key, true);
+    var promise;
+    promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["verify"]);
+    promise = promise.then(function(key) {
+      return helpers.subtleCrypto.verify(alg, key, mac, pdata);
+    });
+    promise = promise.then(function(result) {
+      if (!result) {
+        return Promise.reject(new Error("verification failed"));
+      }
+
+      return {
+        data: pdata,
+        mac: mac,
+        valid: true
+      };
+    });
+
+    return promise;
+  };
+
+  return helpers.setupFallback(null, webcrypto, fallback);
+}
+
+// ### RSA-PSS
+// NOTE: no WebCryptoAPI variant -- too many browsers don't
+// implement it yet (e.g., Firefox, Safari)
+
+function rsassaPssSignFn(name) {
+  var md = name.replace("PS", "SHA").toLowerCase(),
+      hash = name.replace("PS", "SHA-");
+
+  return function(key, pdata) {
+    // create the digest
+    var digest = forge.md[md].create();
+    digest.start();
+    digest.update(pdata);
+
+    // setup padding
+    var pss = forge.pss.create({
+      md: forge.md[md].create(),
+      mgf: forge.mgf.mgf1.create(forge.md[md].create()),
+      saltLength: CONSTANTS.HASHLENGTH[hash] / 8
+    });
+
+    // sign it
+    var pki = rsaUtil.convertToForge(key, false);
+    var sig = pki.sign(digest, pss);
+    sig = new Buffer(sig, "binary");
+
+    return Promise.resolve({
+      data: pdata,
+      mac: sig
+    });
+  };
+}
+
+function rsassaPssVerifyFn(name) {
+  var md = name.replace("PS", "SHA").toLowerCase(),
+      hash = name.replace("PS", "SHA-");
+
+  // ### Fallback implementation -- uses forge
+  return function(key, pdata, mac) {
+    // create the digest
+    var digest = forge.md[md].create();
+    digest.start();
+    digest.update(pdata);
+    digest = digest.digest().bytes();
+
+    // setup padding
+    var pss = forge.pss.create({
+      md: forge.md[md].create(),
+      mgf: forge.mgf.mgf1.create(forge.md[md].create()),
+      saltLength: CONSTANTS.HASHLENGTH[hash] / 8
+    });
+
+    // verify it
+    var pki = rsaUtil.convertToForge(key, true);
+    var sig = mac.toString("binary");
+    var result = pki.verify(digest, sig, pss);
+    if (!result) {
+      return Promise.reject(new Error("verification failed"));
+    }
+    return Promise.resolve({
+      data: pdata,
+      mac: mac,
+      valid: true
+    });
+  };
+}
+
+// ### Public API
+// * [name].sign
+// * [name].verify
+var rsassa = {};
+[
+  "PS256",
+  "PS384",
+  "PS512"
+].forEach(function(name) {
+  rsassa[name] = {
+    sign: rsassaPssSignFn(name),
+    verify: rsassaPssVerifyFn(name)
+  };
+});
+
+[
+  "RS256",
+  "RS384",
+  "RS512"
+].forEach(function(name) {
+  rsassa[name] = {
+    sign: rsassaV15SignFn(name),
+    verify: rsassaV15VerifyFn(name)
+  };
+});
+
+module.exports = rsassa;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"./constants":5,"./helpers.js":10,"./rsa-util.js":15,"buffer":204}],18:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * algorithms/sha.js - Cryptographic Secure Hash Algorithms, versions 1 and 2
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../deps/forge.js"),
+    helpers = require("./helpers.js");
+
+function hashDigestFN(hash) {
+  var md = hash.replace("SHA-", "SHA").toLowerCase();
+
+  var alg = {
+    name: hash
+  };
+
+  // ### Fallback Implementation -- uses forge
+  var fallback = function(pdata /* props */) {
+    var digest = forge.md[md].create();
+    digest.update(pdata);
+    digest = digest.digest().native();
+
+    return Promise.resolve(digest);
+  };
+
+  // ### WebCryptoAPI Implementation
+  var webcrypto = function(pdata /* props */) {
+    var promise;
+    promise = helpers.subtleCrypto.digest(alg, pdata);
+    promise = promise.then(function(result) {
+      // wrap in *augmented* Uint8Array -- Buffer without copies
+      result = new Uint8Array(result);
+      result = Buffer._augment(result);
+      return result;
+    });
+    return promise;
+  };
+
+  // ### nodejs Implementation
+  var nodejs = function(pdata /* props */) {
+    var digest = helpers.nodeCrypto.createHash(md);
+    digest.update(pdata);
+    return digest.digest();
+  };
+
+  return helpers.setupFallback(nodejs, webcrypto, fallback);
+}
+
+// Public API
+// * [name].digest
+var sha = {};
+[
+  "SHA-1",
+  "SHA-256",
+  "SHA-384",
+  "SHA-512"
+].forEach(function(name) {
+  sha[name] = {
+    digest: hashDigestFN(name)
+  };
+});
+
+module.exports = sha;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"./helpers.js":10,"buffer":204}],19:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * deps/ciphermodes/gcm/helpers.js - AES-GCM Helper Functions
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var Long = require("long"),
+    fill = require("lodash.fill"),
+    pack = require("../pack.js");
+
+var E1 = 0xe1000000,
+    E1B = 0xe1,
+    E1L = new Long(E1 >> 8);
+
+function generateLookup() {
+  var lookup = [];
+
+  for (var c = 0; c < 256; ++c) {
+    var v = 0;
+    for (var i = 7; i >= 0; --i) {
+      if ((c & (1 << i)) !== 0) {
+        v ^= (E1 >>> (7 - i));
+      }
+    }
+    lookup.push(v);
+  }
+
+  return lookup;
+}
+
+var helpers = module.exports = {
+  // ### Constants
+  E1: E1,
+  E1B: E1B,
+  E1L: E1L,
+  LOOKUP: generateLookup(),
+
+  // ### Array Helpers
+  arrayCopy: function(src, srcPos, dest, destPos, length) {
+    // Start by checking for negatives since arrays in JS auto-expand
+    if (srcPos < 0 || destPos < 0 || length < 0) {
+      throw new TypeError("Invalid input.");
+    }
+
+    if (dest instanceof Uint8Array) {
+      // Check for overflow if dest is a typed-array
+      if (destPos >= dest.length || (destPos + length) > dest.length) {
+        throw new TypeError("Invalid input.");
+      }
+
+      if (srcPos !== 0 || length < src.length) {
+        if (src instanceof Uint8Array) {
+          src = src.subarray(srcPos, srcPos + length);
+        } else {
+          src = src.slice(srcPos, srcPos + length);
+        }
+      }
+
+      dest.set(src, destPos);
+    } else {
+      for (var i = 0; i < length; ++i) {
+        dest[destPos + i] = src[srcPos + i];
+      }
+    }
+  },
+  arrayEqual: function(a1, a2) {
+    a1 = a1 || [];
+    a2 = a2 || [];
+
+    var len = Math.min(a1.length, a2.length),
+        result = (a1.length === a2.length);
+
+    for (var idx = 0; idx < len; idx++) {
+      result = result &&
+               ("undefined" !== typeof a1[idx]) &&
+               ("undefined" !== typeof a2[idx]) &&
+               (a1[idx] === a2[idx]);
+    }
+
+    return result;
+  },
+
+  // ### Conversions
+  asBytes: function(x, z) {
+    switch (arguments.length) {
+      case 1:
+        z = new Buffer(16);
+        z.fill(0);
+        pack.intToBigEndian(x, z, 0);
+        return z;
+      case 2:
+        pack.intToBigEndian(x, z, 0);
+        break;
+      default:
+        throw new TypeError("Expected 1 or 2 arguments.");
+    }
+  },
+  asInts: function(x, z) {
+    switch (arguments.length) {
+      case 1:
+        z = [];
+        fill(z, 0, 0, 4);
+        pack.bigEndianToInt(x, 0, z);
+        return z;
+      case 2:
+        pack.bigEndianToInt(x, 0, z);
+        break;
+      default:
+        throw new TypeError("Expected 1 or 2 arguments.");
+    }
+  },
+  oneAsInts: function() {
+    var tmp = [];
+    for (var c = 0; c < 4; ++c) {
+        tmp.push(1 << 31);
+    }
+    return tmp;
+  },
+
+  // ## Bit-wise
+  shiftRight: function(x, z) {
+    var b, c;
+    switch (arguments.length) {
+      case 1:
+        b = x[0];
+        x[0] = b >>> 1;
+        c = b << 31;
+        b = x[1];
+        x[1] = (b >>> 1) | c;
+        c = b << 31;
+        b = x[2];
+        x[2] = (b >>> 1) | c;
+        c = b << 31;
+        b = x[3];
+        x[3] = (b >>> 1) | c;
+        return (b << 31) & 0xffffffff;
+      case 2:
+        b = x[0];
+        z[0] = b >>> 1;
+        c = b << 31;
+        b = x[1];
+        z[1] = (b >>> 1) | c;
+        c = b << 31;
+        b = x[2];
+        z[2] = (b >>> 1) | c;
+        c = b << 31;
+        b = x[3];
+        z[3] = (b >>> 1) | c;
+        return (b << 31) & 0xffffffff;
+      default:
+        throw new TypeError("Expected 1 or 2 arguments.");
+    }
+  },
+  shiftRightN: function(x, n, z) {
+    var nInv, b, c;
+    switch (arguments.length) {
+      case 2:
+        b = x[0];
+        nInv = 32 - n;
+        x[0] = b >>> n;
+        c = b << nInv;
+        b = x[1];
+        x[1] = (b >>> n) | c;
+        c = b << nInv;
+        b = x[2];
+        x[2] = (b >>> n) | c;
+        c = b << nInv;
+        b = x[3];
+        x[3] = (b >>> n) | c;
+        return b << nInv;
+      case 3:
+        b = x[0];
+        nInv = 32 - n;
+        z[0] = b >>> n;
+        c = b << nInv;
+        b = x[1];
+        z[1] = (b >>> n) | c;
+        c = b << nInv;
+        b = x[2];
+        z[2] = (b >>> n) | c;
+        c = b << nInv;
+        b = x[3];
+        z[3] = (b >>> n) | c;
+        return b << nInv;
+      default:
+        throw new TypeError("Expected 2 or 3 arguments.");
+    }
+  },
+  xor: function(x, y, z) {
+    switch (arguments.length) {
+      case 2:
+        x[0] ^= y[0];
+        x[1] ^= y[1];
+        x[2] ^= y[2];
+        x[3] ^= y[3];
+        break;
+      case 3:
+        z[0] = x[0] ^ y[0];
+        z[1] = x[1] ^ y[1];
+        z[2] = x[2] ^ y[2];
+        z[3] = x[3] ^ y[3];
+        break;
+      default:
+        throw new TypeError("Expected 2 or 3 arguments.");
+    }
+  },
+
+  multiply: function(x, y) {
+    var r0 = x.slice();
+    var r1 = [];
+
+    for (var i = 0; i < 4; ++i) {
+      var bits = y[i];
+      for (var j = 31; j >= 0; --j) {
+        if ((bits & (1 << j)) !== 0) {
+          helpers.xor(r1, r0);
+        }
+
+        if (helpers.shiftRight(r0) !== 0) {
+          r0[0] ^= helpers.E1;
+        }
+      }
+    }
+
+    helpers.arrayCopy(r1, 0, x, 0, 4);
+  },
+  multiplyP: function(x, y) {
+    switch (arguments.length) {
+      case 1:
+        if (helpers.shiftRight(x) !== 0) {
+          x[0] ^= helpers.E1;
+        }
+        break;
+      case 2:
+        if (helpers.shiftRight(x, y) !== 0) {
+          y[0] ^= helpers.E1;
+        }
+        break;
+      default:
+        throw new TypeError("Expected 1 or 2 arguments.");
+    }
+  },
+  multiplyP8: function(x, y) {
+    var c;
+    switch (arguments.length) {
+      case 1:
+        c = helpers.shiftRightN(x, 8);
+        x[0] ^= helpers.LOOKUP[c >>> 24];
+        break;
+      case 2:
+        c = helpers.shiftRightN(x, 8, y);
+        y[0] ^= helpers.LOOKUP[c >>> 24];
+        break;
+      default:
+        throw new TypeError("Expected 1 or 2 arguments.");
+    }
+  }
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../pack.js":23,"buffer":204,"lodash.fill":81,"long":162}],20:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * deps/ciphermodes/gcm/index.js - AES-GCM implementation Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+ "use strict";
+
+var Long = require("long"),
+    forge = require("../../../deps/forge.js"),
+    multipliers = require("./multipliers.js"),
+    helpers = require("./helpers.js"),
+    pack = require("../pack.js"),
+    DataBuffer = require("../../../util/databuffer.js"),
+    cipherHelpers = require("../helpers.js");
+
+var BLOCK_SIZE = 16;
+
+// ### GCM Mode
+// ### Constructor
+function Gcm(options) {
+  options = options || {};
+
+  this.name = "GCM";
+  this.cipher = options.cipher;
+  this.blockSize = this.blockSize || 16;
+}
+
+// ### exports
+module.exports = {
+  createCipher: function(options) {
+    var alg = new forge.aes.Algorithm("AES-GCM", Gcm);
+    alg.initialize({
+      key: new DataBuffer(options.key)
+    });
+    alg.mode.start(options);
+
+    return alg.mode;
+  },
+  createDecipher: function(options) {
+    var alg = new forge.aes.Algorithm("AES-GCM", Gcm);
+    alg.initialize({
+      key: new DataBuffer(options.key)
+    });
+    alg.mode._decrypt = true;
+    alg.mode.start(options);
+
+    return alg.mode;
+  }
+};
+
+// ### Public API
+Gcm.prototype.start = function(options) {
+  this.tag = null;
+
+  options = options || {};
+
+  if (!("iv" in options)) {
+    throw new Error("Gcm needs ParametersWithIV or AEADParameters");
+  }
+  this.nonce = options.iv;
+  if (this.nonce == null || this.nonce.length < 1) {
+    throw new Error("IV must be at least 1 byte");
+  }
+
+  // TODO: variable tagLength?
+  this.tagLength = 16;
+
+  // TODO: validate tag
+  if ("tag" in options) {
+    this.tag = new Buffer(options.tag);
+  }
+
+  var bufLength = !this._decrypt ?
+                  this.blockSize :
+                  (this.blockSize + this.tagLength);
+  this.bufBlock = new Buffer(bufLength);
+  this.bufBlock.fill(0);
+
+  var multiplier = options.multiplier;
+  if (multiplier == null) {
+    multiplier = new (multipliers["8k"])();
+  }
+  this.multiplier = multiplier;
+
+  this.H = this.zeroBlock();
+  cipherHelpers.encrypt(this.cipher, this.H, 0, this.H, 0);
+
+  // GcmMultiplier tables don"t change unless the key changes
+  // (and are expensive to init)
+  this.multiplier.init(this.H);
+  this.exp = null;
+
+  this.J0 = this.zeroBlock();
+
+  if (this.nonce.length === 12) {
+    this.nonce.copy(this.J0, 0, 0, this.nonce.length);
+    this.J0[this.blockSize - 1] = 0x01;
+  } else {
+    this.gHASH(this.J0, this.nonce, this.nonce.length);
+    var X = this.zeroBlock();
+    pack.longToBigEndian(new Long(this.nonce.length).
+                         multiply(8), X, 8);
+    this.gHASHBlock(this.J0, X);
+  }
+
+  this.S = this.zeroBlock();
+  this.SAt = this.zeroBlock();
+  this.SAtPre = this.zeroBlock();
+  this.atBlock = this.zeroBlock();
+  this.atBlockPos = 0;
+  this.atLength = Long.ZERO;
+  this.atLengthPre = Long.ZERO;
+  this.counter = new Buffer(this.J0);
+  this.bufOff = 0;
+  this.totalLength = Long.ZERO;
+
+  if ("additionalData" in options) {
+    this.processAADBytes(options.additionalData, 0, options.additionalData.length);
+  }
+};
+
+Gcm.prototype.update = function(inV, inOff, len, out, outOff) {
+  var resultLen = 0;
+
+  while (len > 0) {
+    var inLen = Math.min(len, this.bufBlock.length - this.bufOff);
+    inV.copy(this.bufBlock, this.bufOff, inOff, inOff + inLen);
+    len -= inLen;
+    inOff += inLen;
+    this.bufOff += inLen;
+    if (this.bufOff === this.bufBlock.length) {
+      this.outputBlock(out, outOff + resultLen);
+      resultLen += this.blockSize;
+    }
+  }
+
+  return resultLen;
+};
+Gcm.prototype.finish = function(out, outOff) {
+  var resultLen = 0;
+
+  if (this._decrypt) {
+    // append tag
+    resultLen += this.update(this.tag, 0, this.tag.length, out, outOff);
+  }
+
+  if (this.totalLength.isZero()) {
+    this.initCipher();
+  }
+
+  var extra = this.bufOff;
+  if (this._decrypt) {
+    if (extra < this.tagLength) {
+      throw new Error("data too short");
+    }
+    extra -= this.tagLength;
+  }
+
+  if (extra > 0) {
+    this.gCTRPartial(this.bufBlock, 0, extra, out, outOff + resultLen);
+    resultLen += extra;
+  }
+
+  this.atLength = this.atLength.add(this.atBlockPos);
+
+  // Final gHASH
+  var X = this.zeroBlock();
+  pack.longToBigEndian(this.atLength.multiply(8),
+                       X,
+                       0);
+  pack.longToBigEndian(this.totalLength.multiply(8),
+                       X,
+                       8);
+
+  this.gHASHBlock(this.S, X);
+
+  // TODO Fix this if tagLength becomes configurable
+  // T = MSBt(GCTRk(J0,S))
+  var tag = new Buffer(this.blockSize);
+  tag.fill(0);
+  cipherHelpers.encrypt(this.cipher, this.J0, 0, tag, 0);
+  this.xor(tag, this.S);
+
+  if (this._decrypt) {
+    if (!helpers.arrayEqual(this.tag, tag)) {
+      throw new Error("mac check in Gcm failed");
+    }
+  } else {
+    // We place into tag our calculated value for T
+    this.tag = new Buffer(this.tagLength);
+    tag.copy(this.tag, 0, 0, this.tagLength);
+  }
+
+  return resultLen;
+};
+
+// ### "Internal" Helper Functions
+Gcm.prototype.initCipher = function() {
+  if (this.atLength.greaterThan(Long.ZERO)) {
+    this.SAt.copy(this.SAtPre, 0, 0, this.blockSize);
+    this.atLengthPre = this.atLength.add(Long.ZERO);
+  }
+
+  // Finish hash for partial AAD block
+  if (this.atBlockPos > 0) {
+    this.gHASHPartial(this.SAtPre, this.atBlock, 0, this.atBlockPos);
+    this.atLengthPre = this.atLengthPre.add(this.atBlockPos);
+  }
+
+  if (this.atLengthPre.greaterThan(Long.ZERO)) {
+    this.SAtPre.copy(this.S, 0, 0, this.blockSize);
+  }
+};
+
+Gcm.prototype.outputBlock = function(output, offset) {
+  if (this.totalLength.isZero()) {
+    this.initCipher();
+  }
+  this.gCTRBlock(this.bufBlock, output, offset);
+  if (!this._decrypt) {
+    this.bufOff = 0;
+  } else {
+    this.bufBlock.copy(this.bufBlock, 0, this.blockSize, this.blockSize + this.tagLength);
+    this.bufOff = this.tagLength;
+  }
+};
+
+Gcm.prototype.processAADBytes = function(inV, inOff, len) {
+  for (var i = 0; i < len; ++i) {
+    this.atBlock[this.atBlockPos] = inV[inOff + i];
+    if (++this.atBlockPos === this.blockSize) {
+      // Hash each block as it fills
+      this.gHASHBlock(this.SAt, this.atBlock);
+      this.atBlockPos = 0;
+      this.atLength = this.atLength.add(this.blockSize);
+    }
+  }
+};
+
+Gcm.prototype.getNextCounterBlock = function() {
+  for (var i = 15; i >= 12; --i) {
+    var b = ((this.counter[i] + 1) & 0xff);
+    this.counter[i] = b;
+
+    if (b !== 0) {
+      break;
+    }
+  }
+
+  // encrypt counter
+  var outb = new Buffer(this.blockSize);
+  outb.fill(0);
+  cipherHelpers.encrypt(this.cipher, this.counter, 0, outb, 0);
+
+  return outb;
+};
+
+Gcm.prototype.gCTRBlock = function(block, out, outOff) {
+  var tmp = this.getNextCounterBlock();
+
+  this.xor(tmp, block);
+  tmp.copy(out, outOff, 0, this.blockSize);
+
+  this.gHASHBlock(this.S, !this._decrypt ? tmp : block);
+
+  this.totalLength = this.totalLength.add(this.blockSize);
+};
+Gcm.prototype.gCTRPartial = function(buf, off, len, out, outOff) {
+  var tmp = this.getNextCounterBlock();
+
+  this.xor(tmp, buf, off, len);
+  tmp.copy(out, outOff, 0, len);
+
+  this.gHASHPartial(this.S, !this._decrypt ? tmp : buf, 0, len);
+
+  this.totalLength = this.totalLength.add(len);
+};
+
+Gcm.prototype.gHASHBlock = function(Y, b) {
+  this.xor(Y, b);
+  this.multiplier.multiplyH(Y);
+};
+Gcm.prototype.gHASHPartial = function(Y, b, off, len) {
+  this.xor(Y, b, off, len);
+  this.multiplier.multiplyH(Y);
+};
+
+Gcm.prototype.xor = function(block, val, off, len) {
+  switch (arguments.length) {
+    case 2:
+      for (var i = 15; i >= 0; --i) {
+        block[i] ^= val[i];
+      }
+      break;
+    case 4:
+      while (len-- > 0) {
+        block[len] ^= val[off + len];
+      }
+      break;
+    default:
+      throw new TypeError("Expected 2 or 4 arguments.");
+  }
+
+  return block;
+};
+
+Gcm.prototype.zeroBlock = function() {
+  var block = new Buffer(BLOCK_SIZE);
+  block.fill(0);
+  return block;
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../../../deps/forge.js":27,"../../../util/databuffer.js":51,"../helpers.js":22,"../pack.js":23,"./helpers.js":19,"./multipliers.js":21,"buffer":204,"long":162}],21:[function(require,module,exports){
+/*!
+ * deps/ciphermodes/gcm/multipliers.js - AES-GCM Multipliers
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+ "use strict";
+
+var helpers = require("./helpers.js"),
+    pack = require("../pack.js");
+
+
+// ### 8K Table Multiplier
+function Gcm8KMultiplier() {
+  this.H = [];
+  this.M = null;
+}
+
+Gcm8KMultiplier.prototype.init = function(H) {
+  var i, j, k;
+  if (this.M == null) {
+    // sc: I realize this UGLY...
+    //M = new int[32][16][4];
+    this.M = [];
+    for (i = 0; i < 32; ++i) {
+      this.M[i] = [];
+      for (j = 0; j < 16; ++j) {
+        this.M[i][j] = [];
+        for (k = 0; k < 4; ++k) {
+          this.M[i][j][k] = 0;
+        }
+      }
+    }
+  } else if (helpers.arrayEqual(this.H, H)) {
+    return;
+  }
+
+  this.H = H.slice();
+
+  // M[0][0] is ZEROES;
+  // M[1][0] is ZEROES;
+  helpers.asInts(H, this.M[1][8]);
+
+  for (j = 4; j >= 1; j >>= 1) {
+    helpers.multiplyP(this.M[1][j + j], this.M[1][j]);
+  }
+  helpers.multiplyP(this.M[1][1], this.M[0][8]);
+
+  for (j = 4; j >= 1; j >>= 1) {
+    helpers.multiplyP(this.M[0][j + j], this.M[0][j]);
+  }
+
+  i = 0;
+  for (;;) {
+    for (j = 2; j < 16; j += j) {
+      for (k = 1; k < j; ++k) {
+        helpers.xor(this.M[i][j], this.M[i][k], this.M[i][j + k]);
+      }
+    }
+
+    if (++i === 32) {
+      return;
+    }
+
+    if (i > 1) {
+      // M[i][0] is ZEROES;
+      for (j = 8; j > 0; j >>= 1) {
+        helpers.multiplyP8(this.M[i - 2][j], this.M[i][j]);
+      }
+    }
+  }
+};
+Gcm8KMultiplier.prototype.multiplyH = function(x) {
+  var z = [];
+  for (var i = 15; i >= 0; --i) {
+    var m = this.M[i + i][x[i] & 0x0f];
+    z[0] ^= m[0];
+    z[1] ^= m[1];
+    z[2] ^= m[2];
+    z[3] ^= m[3];
+    m = this.M[i + i + 1][(x[i] & 0xf0) >>> 4];
+    z[0] ^= m[0];
+    z[1] ^= m[1];
+    z[2] ^= m[2];
+    z[3] ^= m[3];
+  }
+
+  pack.intToBigEndian(z, x, 0);
+};
+
+
+module.exports = {
+  "8k": Gcm8KMultiplier
+};
+
+},{"../pack.js":23,"./helpers.js":19}],22:[function(require,module,exports){
+/*!
+ * deps/ciphermodes/helpers.js - Cipher Helper Functions
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var pack = require("./pack.js");
+
+function doEncrypt(cipher, inb, inOff, outb, outOff) {
+  var input = new Array(4),
+      output = new Array(4);
+
+  pack.bigEndianToInt(inb, inOff, input);
+  cipher.encrypt(input, output);
+  pack.intToBigEndian(output, outb, outOff);
+}
+
+module.exports = {
+  encrypt: doEncrypt
+};
+
+},{"./pack.js":23}],23:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * deps/ciphermodes/pack.js - Pack/Unpack Functions
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var Long = require("long");
+
+var pack = module.exports = {
+  intToBigEndian: function(n, bs, off) {
+    if (typeof n === "number") {
+      switch (arguments.length) {
+        case 1:
+          bs = new Buffer(4);
+          bs.fill(0);
+          pack.intToBigEndian(n, bs, 0);
+          break;
+        case 3:
+          bs[off] = 0xff & (n >>> 24);
+          bs[++off] = 0xff & (n >>> 16);
+          bs[++off] = 0xff & (n >>> 8);
+          bs[++off] = 0xff & (n);
+          break;
+        default:
+          throw new TypeError("Expected 1 or 3 arguments.");
+      }
+    } else {
+      switch (arguments.length) {
+        case 1:
+          bs = new Buffer(4 * n.length);
+          bs.fill(0);
+          pack.intToBigEndian(n, bs, 0);
+          break;
+        case 3:
+          for (var i = 0; i < n.length; ++i) {
+            pack.intToBigEndian(n[i], bs, off);
+            off += 4;
+          }
+          break;
+        default:
+          throw new TypeError("Expected 1 or 3 arguments.");
+      }
+    }
+
+    return bs;
+  },
+  longToBigEndian: function(n, bs, off) {
+    if (!Array.isArray(n)) {
+      // Single
+      switch (arguments.length) {
+        case 1:
+          bs = new Buffer(8);
+          bs.fill(0);
+          pack.longToBigEndian(n, bs, 0);
+          break;
+        case 3:
+          var lo = n.low,
+              hi = n.high;
+          pack.intToBigEndian(hi, bs, off);
+          pack.intToBigEndian(lo, bs, off + 4);
+          break;
+        default:
+          throw new TypeError("Expected 1 or 3 arguments.");
+      }
+    } else {
+      // Array
+      switch (arguments.length) {
+        case 1:
+          bs = new Buffer(8 * n.length);
+          bs.fill(0);
+          pack.longToBigEndian(n, bs, 0);
+          break;
+        case 3:
+          for (var i = 0; i < n.length; ++i) {
+            pack.longToBigEndian(n[i], bs, off);
+            off += 8;
+          }
+          break;
+        default:
+          throw new TypeError("Expected 1 or 3 arguments.");
+      }
+    }
+
+    return bs;
+  },
+
+  bigEndianToInt: function(bs, off, ns) {
+    switch (arguments.length) {
+      case 2:
+        var n = bs[off] << 24;
+        n |= (bs[++off] & 0xff) << 16;
+        n |= (bs[++off] & 0xff) << 8;
+        n |= (bs[++off] & 0xff);
+        return n;
+      case 3:
+        for (var i = 0; i < ns.length; ++i) {
+          ns[i] = pack.bigEndianToInt(bs, off);
+          off += 4;
+        }
+        break;
+      default:
+        throw new TypeError("Expected 2 or 3 arguments.");
+    }
+  },
+  bigEndianToLong: function(bs, off, ns) {
+    switch (arguments.length) {
+      case 2:
+        var hi = pack.bigEndianToInt(bs, off);
+        var lo = pack.bigEndianToInt(bs, off + 4);
+        var num = new Long(lo, hi);
+        return num;
+      case 3:
+        for (var i = 0; i < ns.length; ++i) {
+          ns[i] = pack.bigEndianToLong(bs, off);
+          off += 8;
+        }
+        break;
+      default:
+        throw new TypeError("Expected 2 or 3 arguments.");
+    }
+  }
+};
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":204,"long":162}],24:[function(require,module,exports){
+/**
+ * deps/ecc/curves.js - Elliptic Curve NIST/SECG/X9.62 Parameters
+ * Original Copyright (c) 2003-2005  Tom Wu.
+ * Modifications Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ *
+ * Ported from Tom Wu, which is ported from BouncyCastle
+ * Modified to reuse existing external NPM modules, restricted to the
+ * NIST//SECG/X9.62 prime curves only, and formatted to match project
+ * coding styles.
+ */
+"use strict";
+
+// Named EC curves
+
+var BigInteger = require("jsbn").BigInteger,
+    ec = require("./math.js");
+
+// ----------------
+// X9ECParameters
+
+// constructor
+function X9ECParameters(curve, g, n, h) {
+  this.curve = curve;
+  this.g = g;
+  this.n = n;
+  this.h = h;
+}
+
+function x9getCurve() {
+  return this.curve;
+}
+
+function x9getG() {
+  return this.g;
+}
+
+function x9getN() {
+  return this.n;
+}
+
+function x9getH() {
+  return this.h;
+}
+
+X9ECParameters.prototype.getCurve = x9getCurve;
+X9ECParameters.prototype.getG = x9getG;
+X9ECParameters.prototype.getN = x9getN;
+X9ECParameters.prototype.getH = x9getH;
+
+// ----------------
+// SECNamedCurves
+
+function fromHex(s) { return new BigInteger(s, 16); }
+
+function secp256r1() {
+  // p = 2^224 (2^32 - 1) + 2^192 + 2^96 - 1
+  var p = fromHex("FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF");
+  var a = fromHex("FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFC");
+  var b = fromHex("5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B");
+  var n = fromHex("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551");
+  var h = BigInteger.ONE;
+  var curve = new ec.ECCurveFp(p, a, b);
+  var G = curve.decodePointHex("04"
+              + "6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296"
+              + "4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5");
+  return new X9ECParameters(curve, G, n, h);
+}
+
+function secp384r1() {
+  // p = 2^384 - 2^128 - 2^96 + 2^32 - 1
+  var p = fromHex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF");
+  var a = fromHex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFC");
+  var b = fromHex("B3312FA7E23EE7E4988E056BE3F82D19181D9C6EFE8141120314088F5013875AC656398D8A2ED19D2A85C8EDD3EC2AEF");
+  var n = fromHex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52973");
+  var h = BigInteger.ONE;
+  var curve = new ec.ECCurveFp(p, a, b);
+  var G = curve.decodePointHex("04"
+              + "AA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7"
+              + "3617DE4A96262C6F5D9E98BF9292DC29F8F41DBD289A147CE9DA3113B5F0B8C00A60B1CE1D7E819D7A431D7C90EA0E5F");
+  return new X9ECParameters(curve, G, n, h);
+}
+
+function secp521r1() {
+  // p = 2^521 - 1
+  var p = fromHex("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
+  var a = fromHex("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC");
+  var b = fromHex("0051953EB9618E1C9A1F929A21A0B68540EEA2DA725B99B315F3B8B489918EF109E156193951EC7E937B1652C0BD3BB1BF073573DF883D2C34F1EF451FD46B503F00");
+  var n = fromHex("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA51868783BF2F966B7FCC0148F709A5D03BB5C9B8899C47AEBB6FB71E91386409");
+  var h = BigInteger.ONE;
+  var curve = new ec.ECCurveFp(p, a, b);
+  var G = curve.decodePointHex("04"
+                + "00C6858E06B70404E9CD9E3ECB662395B4429C648139053FB521F828AF606B4D3DBAA14B5E77EFE75928FE1DC127A2FFA8DE3348B3C1856A429BF97E7E31C2E5BD66"
+                + "011839296A789A3BC0045C8A5FB42C7D1BD998F54449579B446817AFBD17273E662C97EE72995EF42640C550B9013FAD0761353C7086A272C24088BE94769FD16650");
+  return new X9ECParameters(curve, G, n, h);
+}
+
+// ----------------
+// Public API
+
+var CURVES = module.exports = {
+  "secp256r1": secp256r1(),
+  "secp384r1": secp384r1(),
+  "secp521r1": secp521r1()
+};
+
+// also export NIST names
+CURVES["P-256"] = CURVES.secp256r1;
+CURVES["P-384"] = CURVES.secp384r1;
+CURVES["P-521"] = CURVES.secp521r1;
+
+},{"./math.js":26,"jsbn":56}],25:[function(require,module,exports){
+(function (Buffer){
+/**
+ * deps/ecc/index.js - Elliptic Curve Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../../deps/forge"),
+    BigInteger = require("jsbn").BigInteger,
+    ec = require("./math.js"),
+    CURVES = require("./curves.js");
+
+// ### Helpers
+function hex2bn(s) {
+  return new BigInteger(s, 16);
+}
+
+function bn2bin(bn, len) {
+  if (!len) {
+    len = Math.ceil(bn.bitLength() / 8);
+  }
+  len = len * 2;
+
+  var hex = bn.toString(16);
+  // truncate-left if too large
+  hex = hex.substring(Math.max(hex.length - len, 0));
+  // pad-left if too small
+  while (len > hex.length) {
+    hex = "0" + hex;
+  }
+
+  return new Buffer(hex, "hex");
+}
+function bin2bn(s) {
+  if ("string" === typeof s) {
+    s = new Buffer(s, "binary");
+  }
+  return hex2bn(s.toString("hex"));
+}
+
+function keySizeBytes(params) {
+  return Math.ceil(params.getN().bitLength() / 8);
+}
+
+function namedCurve(curve) {
+  var params = CURVES[curve];
+  if (!params) {
+    throw new TypeError("unsupported named curve: " + curve);
+  }
+
+  return params;
+}
+
+function normalizeEcdsa(params, md) {
+  var log2n = params.getN().bitLength(),
+      mdLen = md.length * 8;
+
+  var e = bin2bn(md);
+  if (log2n < mdLen) {
+    e = e.shiftRight(mdLen - log2n);
+  }
+
+  return e;
+}
+
+// ### EC Public Key
+
+/**
+ *
+ * @param {String} curve The named curve
+ * @param {BigInteger} x The X coordinate
+ * @param {BigInteger} y The Y coordinate
+ */
+function ECPublicKey(curve, x, y) {
+  var params = namedCurve(curve),
+      c = params.getCurve();
+  var key = new ec.ECPointFp(c,
+                             c.fromBigInteger(x),
+                             c.fromBigInteger(y));
+
+  this.curve = curve;
+  this.params = params;
+  this.point = key;
+
+  var size = keySizeBytes(params);
+  this.x = bn2bin(x, size);
+  this.y = bn2bin(y, size);
+}
+
+// ECDSA
+ECPublicKey.prototype.verify = function(md, sig) {
+  var N = this.params.getN(),
+      G = this.params.getG();
+
+  // prepare and validate (r, s)
+  var r = bin2bn(sig.r),
+      s = bin2bn(sig.s);
+  if (r.compareTo(BigInteger.ONE) < 0 || r.compareTo(N) >= 0) {
+    return false;
+  }
+  if (s.compareTo(BigInteger.ONE) < 0 || r.compareTo(N) >= 0) {
+    return false;
+  }
+
+  // normalize input
+  var e = normalizeEcdsa(this.params, md);
+  // verify (r, s)
+  var w = s.modInverse(N),
+      u1 = e.multiply(w).mod(N),
+      u2 = r.multiply(w).mod(N);
+
+  var v = G.multiplyTwo(u1, this.point, u2).getX().toBigInteger();
+  v = v.mod(N);
+
+  return v.equals(r);
+};
+
+// ### EC Private Key
+
+/**
+ * @param {String} curve The named curve
+ * @param {Buffer} key The private key value
+ */
+function ECPrivateKey(curve, key) {
+  var params = namedCurve(curve);
+  this.curve = curve;
+  this.params = params;
+
+  var size = keySizeBytes(params);
+  this.d = bn2bin(key, size);
+}
+
+ECPrivateKey.prototype.toPublicKey = function() {
+  var d = bin2bn(this.d);
+  var P = this.params.getG().multiply(d);
+  return new ECPublicKey(this.curve,
+                         P.getX().toBigInteger(),
+                         P.getY().toBigInteger());
+};
+
+// ECDSA
+ECPrivateKey.prototype.sign = function(md) {
+  var keysize = keySizeBytes(this.params),
+      N = this.params.getN(),
+      G = this.params.getG(),
+      e = normalizeEcdsa(this.params, md),
+      d = bin2bn(this.d);
+
+  var r, s;
+  var k, x1, z;
+  do {
+    do {
+      // determine random nonce
+      do {
+        k = bin2bn(forge.random.getBytes(keysize));
+      } while (k.equals(BigInteger.ZERO) || k.compareTo(N) >= 0);
+      // (x1, y1) = k * G
+      x1 = G.multiply(k).getX().toBigInteger();
+      // r = x1 mod N
+      r = x1.mod(N);
+    } while (r.equals(BigInteger.ZERO));
+    // s = (k^-1 * (e + r * d)) mod N
+    z = d.multiply(r);
+    z = e.add(z);
+    s = k.modInverse(N).multiply(z).mod(N);
+  } while (s.equals(BigInteger.ONE));
+
+  // convert (r, s) to bytes
+  var len = keySizeBytes(this.params);
+  r = bn2bin(r, len);
+  s = bn2bin(s, len);
+
+  return {
+    r: r,
+    s: s
+  };
+};
+
+// ECDH
+ECPrivateKey.prototype.computeSecret = function(pubkey) {
+  var d = bin2bn(this.d);
+  var S = pubkey.point.multiply(d).getX().toBigInteger();
+  S = bn2bin(S, keySizeBytes(this.params));
+  return S;
+};
+
+// ### Public API
+exports.generateKeyPair = function(curve) {
+  var params = namedCurve(curve),
+      n = params.getN();
+
+  // generate random within range [1, N-1)
+  var r = forge.random.getBytes(keySizeBytes(params));
+  r = bin2bn(r);
+
+  var n1 = n.subtract(BigInteger.ONE);
+  var d = r.mod(n1).add(BigInteger.ONE);
+
+  var privkey = new ECPrivateKey(curve, d),
+      pubkey = privkey.toPublicKey();
+
+  return {
+    "private": privkey,
+    "public": pubkey
+  };
+};
+
+exports.asPublicKey = function(curve, x, y) {
+  if ("string" === typeof x) {
+    x = hex2bn(x);
+  } else if (Buffer.isBuffer(x)) {
+    x = bin2bn(x);
+  }
+
+  if ("string" === typeof y) {
+    y = hex2bn(y);
+  } else if (Buffer.isBuffer(y)) {
+    y = bin2bn(y);
+  }
+
+  var pubkey = new ECPublicKey(curve, x, y);
+  return pubkey;
+};
+exports.asPrivateKey = function(curve, d) {
+  // Elaborate way to get to a Buffer from a (String|Buffer|BigInteger)
+  if ("string" === typeof d) {
+    d = hex2bn(d);
+  } else if (Buffer.isBuffer(d)) {
+    d = bin2bn(d);
+  }
+
+  var privkey = new ECPrivateKey(curve, d);
+  return privkey;
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../../deps/forge":27,"./curves.js":24,"./math.js":26,"buffer":204,"jsbn":56}],26:[function(require,module,exports){
+/**
+ * deps/ecc/math.js - Elliptic Curve Math
+ * Original Copyright (c) 2003-2005  Tom Wu.
+ * Modifications Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ *
+ * Ported from Tom Wu, which is ported from BouncyCastle
+ * Modified to reuse existing external NPM modules, restricted to the
+ * NIST//SECG/X9.62 prime curves only, and formatted to match project
+ * coding styles.
+ */
+"use strict";
+
+// Basic Javascript Elliptic Curve implementation
+// Ported loosely from BouncyCastle's Java EC code
+// Only Fp curves implemented for now
+
+// Requires jsbn.js and jsbn2.js
+var jsbn = require("jsbn");
+
+var BigInteger = jsbn.BigInteger,
+    Barrett = BigInteger.prototype.Barrett;
+
+// ----------------
+// ECFieldElementFp
+
+// constructor
+function ECFieldElementFp(q, x) {
+  this.x = x;
+  // TODO if(x.compareTo(q) >= 0) error
+  this.q = q;
+}
+
+function feFpEquals(other) {
+  if (other === this) {
+    return true;
+  }
+  return (this.q.equals(other.q) && this.x.equals(other.x));
+}
+
+function feFpToBigInteger() {
+  return this.x;
+}
+
+function feFpNegate() {
+  return new ECFieldElementFp(this.q, this.x.negate().mod(this.q));
+}
+
+function feFpAdd(b) {
+  return new ECFieldElementFp(this.q, this.x.add(b.toBigInteger()).mod(this.q));
+}
+
+function feFpSubtract(b) {
+  return new ECFieldElementFp(this.q, this.x.subtract(b.toBigInteger()).mod(this.q));
+}
+
+function feFpMultiply(b) {
+  return new ECFieldElementFp(this.q, this.x.multiply(b.toBigInteger()).mod(this.q));
+}
+
+function feFpSquare() {
+  return new ECFieldElementFp(this.q, this.x.square().mod(this.q));
+}
+
+function feFpDivide(b) {
+  return new ECFieldElementFp(this.q, this.x.multiply(b.toBigInteger().modInverse(this.q)).mod(this.q));
+}
+
+ECFieldElementFp.prototype.equals = feFpEquals;
+ECFieldElementFp.prototype.toBigInteger = feFpToBigInteger;
+ECFieldElementFp.prototype.negate = feFpNegate;
+ECFieldElementFp.prototype.add = feFpAdd;
+ECFieldElementFp.prototype.subtract = feFpSubtract;
+ECFieldElementFp.prototype.multiply = feFpMultiply;
+ECFieldElementFp.prototype.square = feFpSquare;
+ECFieldElementFp.prototype.divide = feFpDivide;
+
+// ----------------
+// ECPointFp
+
+// constructor
+function ECPointFp(curve, x, y, z) {
+  this.curve = curve;
+  this.x = x;
+  this.y = y;
+  // Projective coordinates: either zinv == null or z * zinv == 1
+  // z and zinv are just BigIntegers, not fieldElements
+  if (!z) {
+    this.z = BigInteger.ONE;
+  } else {
+    this.z = z;
+  }
+  this.zinv = null;
+  //TODO: compression flag
+}
+
+function pointFpGetX() {
+  if(!this.zinv) {
+    this.zinv = this.z.modInverse(this.curve.q);
+  }
+  var r = this.x.toBigInteger().multiply(this.zinv);
+  this.curve.reduce(r);
+  return this.curve.fromBigInteger(r);
+}
+
+function pointFpGetY() {
+  if(!this.zinv) {
+    this.zinv = this.z.modInverse(this.curve.q);
+  }
+  var r = this.y.toBigInteger().multiply(this.zinv);
+  this.curve.reduce(r);
+  return this.curve.fromBigInteger(r);
+}
+
+function pointFpEquals(other) {
+  if (other === this) {
+    return true;
+  }
+  if (this.isInfinity()) {
+    return other.isInfinity();
+  }
+  if (other.isInfinity()) {
+    return this.isInfinity();
+  }
+  var u, v;
+  // u = Y2 * Z1 - Y1 * Z2
+  u = other.y.toBigInteger().multiply(this.z).subtract(this.y.toBigInteger().multiply(other.z)).mod(this.curve.q);
+  if (!u.equals(BigInteger.ZERO)) {
+    return false;
+  }
+  // v = X2 * Z1 - X1 * Z2
+  v = other.x.toBigInteger().multiply(this.z).subtract(this.x.toBigInteger().multiply(other.z)).mod(this.curve.q);
+  return v.equals(BigInteger.ZERO);
+}
+
+function pointFpIsInfinity() {
+  if ((this.x == null) && (this.y == null)) {
+    return true;
+  }
+  return (this.z.equals(BigInteger.ZERO) && !this.y.toBigInteger().equals(BigInteger.ZERO));
+}
+
+function pointFpNegate() {
+    return new ECPointFp(this.curve, this.x, this.y.negate(), this.z);
+}
+
+function pointFpAdd(b) {
+  if (this.isInfinity()) {
+    return b;
+  }
+  if (b.isInfinity()) {
+    return this;
+  }
+
+  // u = Y2 * Z1 - Y1 * Z2
+  var u = b.y.toBigInteger().multiply(this.z).subtract(this.y.toBigInteger().multiply(b.z)).mod(this.curve.q);
+  // v = X2 * Z1 - X1 * Z2
+  var v = b.x.toBigInteger().multiply(this.z).subtract(this.x.toBigInteger().multiply(b.z)).mod(this.curve.q);
+
+  if (BigInteger.ZERO.equals(v)) {
+    if (BigInteger.ZERO.equals(u)) {
+      return this.twice(); // this == b, so double
+    }
+    return this.curve.getInfinity(); // this = -b, so infinity
+  }
+
+  var THREE = new BigInteger("3");
+  var x1 = this.x.toBigInteger();
+  var y1 = this.y.toBigInteger();
+
+  var v2 = v.square();
+  var v3 = v2.multiply(v);
+  var x1v2 = x1.multiply(v2);
+  var zu2 = u.square().multiply(this.z);
+
+  // x3 = v * (z2 * (z1 * u^2 - 2 * x1 * v^2) - v^3)
+  var x3 = zu2.subtract(x1v2.shiftLeft(1)).multiply(b.z).subtract(v3).multiply(v).mod(this.curve.q);
+  // y3 = z2 * (3 * x1 * u * v^2 - y1 * v^3 - z1 * u^3) + u * v^3
+  var y3 = x1v2.multiply(THREE).multiply(u).subtract(y1.multiply(v3)).subtract(zu2.multiply(u)).multiply(b.z).add(u.multiply(v3)).mod(this.curve.q);
+  // z3 = v^3 * z1 * z2
+  var z3 = v3.multiply(this.z).multiply(b.z).mod(this.curve.q);
+
+  return new ECPointFp(this.curve, this.curve.fromBigInteger(x3), this.curve.fromBigInteger(y3), z3);
+}
+
+function pointFpTwice() {
+  if(this.isInfinity()) {
+    return this;
+  }
+  if (this.y.toBigInteger().signum() === 0) {
+    return this.curve.getInfinity();
+  }
+
+  // TODO: optimized handling of constants
+  var THREE = new BigInteger("3");
+  var x1 = this.x.toBigInteger();
+  var y1 = this.y.toBigInteger();
+
+  var y1z1 = y1.multiply(this.z);
+  var y1sqz1 = y1z1.multiply(y1).mod(this.curve.q);
+  var a = this.curve.a.toBigInteger();
+
+  // w = 3 * x1^2 + a * z1^2
+  var w = x1.square().multiply(THREE);
+  if (!BigInteger.ZERO.equals(a)) {
+    w = w.add(this.z.square().multiply(a));
+  }
+  w = w.mod(this.curve.q);
+  //this.curve.reduce(w);
+  // x3 = 2 * y1 * z1 * (w^2 - 8 * x1 * y1^2 * z1)
+  var x3 = w.square().subtract(x1.shiftLeft(3).multiply(y1sqz1)).shiftLeft(1).multiply(y1z1).mod(this.curve.q);
+  // y3 = 4 * y1^2 * z1 * (3 * w * x1 - 2 * y1^2 * z1) - w^3
+  var y3 = w.multiply(THREE).multiply(x1).subtract(y1sqz1.shiftLeft(1)).shiftLeft(2).multiply(y1sqz1).subtract(w.square().multiply(w)).mod(this.curve.q);
+  // z3 = 8 * (y1 * z1)^3
+  var z3 = y1z1.square().multiply(y1z1).shiftLeft(3).mod(this.curve.q);
+
+  return new ECPointFp(this.curve, this.curve.fromBigInteger(x3), this.curve.fromBigInteger(y3), z3);
+}
+
+// Simple NAF (Non-Adjacent Form) multiplication algorithm
+// TODO: modularize the multiplication algorithm
+function pointFpMultiply(k) {
+  if (this.isInfinity()) {
+    return this;
+  }
+  if (k.signum() === 0) {
+    return this.curve.getInfinity();
+  }
+
+  var e = k;
+  var h = e.multiply(new BigInteger("3"));
+
+  var neg = this.negate();
+  var R = this;
+
+  var i;
+  for(i = h.bitLength() - 2; i > 0; --i) {
+    R = R.twice();
+
+    var hBit = h.testBit(i);
+    var eBit = e.testBit(i);
+
+    if (hBit !== eBit) {
+      R = R.add(hBit ? this : neg);
+    }
+  }
+
+  return R;
+}
+
+// Compute this*j + x*k (simultaneous multiplication)
+function pointFpMultiplyTwo(j, x, k) {
+  var i;
+  if (j.bitLength() > k.bitLength()) {
+    i = j.bitLength() - 1;
+  } else {
+    i = k.bitLength() - 1;
+  }
+
+  var R = this.curve.getInfinity();
+  var both = this.add(x);
+  while (i >= 0) {
+    R = R.twice();
+    if (j.testBit(i)) {
+      if (k.testBit(i)) {
+        R = R.add(both);
+      }
+      else {
+        R = R.add(this);
+      }
+    }
+    else {
+      if (k.testBit(i)) {
+        R = R.add(x);
+      }
+    }
+    --i;
+  }
+
+  return R;
+}
+
+ECPointFp.prototype.getX = pointFpGetX;
+ECPointFp.prototype.getY = pointFpGetY;
+ECPointFp.prototype.equals = pointFpEquals;
+ECPointFp.prototype.isInfinity = pointFpIsInfinity;
+ECPointFp.prototype.negate = pointFpNegate;
+ECPointFp.prototype.add = pointFpAdd;
+ECPointFp.prototype.twice = pointFpTwice;
+ECPointFp.prototype.multiply = pointFpMultiply;
+ECPointFp.prototype.multiplyTwo = pointFpMultiplyTwo;
+
+// ----------------
+// ECCurveFp
+
+// constructor
+function ECCurveFp(q, a, b) {
+  this.q = q;
+  this.a = this.fromBigInteger(a);
+  this.b = this.fromBigInteger(b);
+  this.infinity = new ECPointFp(this, null, null);
+  this.reducer = new Barrett(this.q);
+}
+
+function curveFpGetQ() {
+  return this.q;
+}
+
+function curveFpGetA() {
+  return this.a;
+}
+
+function curveFpGetB() {
+  return this.b;
+}
+
+function curveFpEquals(other) {
+  if (other === this) {
+    return true;
+  }
+  return (this.q.equals(other.q) && this.a.equals(other.a) && this.b.equals(other.b));
+}
+
+function curveFpGetInfinity() {
+  return this.infinity;
+}
+
+function curveFpFromBigInteger(x) {
+  return new ECFieldElementFp(this.q, x);
+}
+
+function curveReduce(x) {
+  this.reducer.reduce(x);
+}
+
+// for now, work with hex strings because they're easier in JS
+function curveFpDecodePointHex(s) {
+  switch (parseInt(s.substring(0, 2), 16)) {
+    // first byte
+    case 0:
+      return this.infinity;
+    case 2:
+    case 3:
+      // point compression not supported yet
+      return null;
+    case 4:
+    case 6:
+    case 7:
+      var len = (s.length - 2) / 2;
+      var xHex = s.substr(2, len);
+      var yHex = s.substr(len + 2, len);
+
+      return new ECPointFp(this,
+                           this.fromBigInteger(new BigInteger(xHex, 16)),
+                           this.fromBigInteger(new BigInteger(yHex, 16)));
+
+    default: // unsupported
+      return null;
+    }
+}
+
+function curveFpEncodePointHex(p) {
+  if (p.isInfinity()) {
+    return "00";
+  }
+  var xHex = p.getX().toBigInteger().toString(16);
+  var yHex = p.getY().toBigInteger().toString(16);
+  var oLen = this.getQ().toString(16).length;
+  if ((oLen % 2) !== 0) {
+    oLen++;
+  }
+  while (xHex.length < oLen) {
+    xHex = "0" + xHex;
+  }
+  while (yHex.length < oLen) {
+    yHex = "0" + yHex;
+  }
+  return "04" + xHex + yHex;
+}
+
+ECCurveFp.prototype.getQ = curveFpGetQ;
+ECCurveFp.prototype.getA = curveFpGetA;
+ECCurveFp.prototype.getB = curveFpGetB;
+ECCurveFp.prototype.equals = curveFpEquals;
+ECCurveFp.prototype.getInfinity = curveFpGetInfinity;
+ECCurveFp.prototype.fromBigInteger = curveFpFromBigInteger;
+ECCurveFp.prototype.reduce = curveReduce;
+ECCurveFp.prototype.decodePointHex = curveFpDecodePointHex;
+ECCurveFp.prototype.encodePointHex = curveFpEncodePointHex;
+
+// Exports
+module.exports = {
+  ECFieldElementFp: ECFieldElementFp,
+  ECPointFp: ECPointFp,
+  ECCurveFp: ECCurveFp
+};
+
+},{"jsbn":56}],27:[function(require,module,exports){
+/*!
+ * deps/forge.js - Forge Package Customization
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
+ */
+"use strict";
+
+var forge = {
+  aes: require("node-forge/js/aes"),
+  asn1: require("node-forge/js/asn1"),
+  cipher: require("node-forge/js/cipher"),
+  hmac: require("node-forge/js/hmac"),
+  jsbn: require("node-forge/js/jsbn"),
+  md: require("node-forge/js/md"),
+  mgf: require("node-forge/js/mgf"),
+  pem: require("node-forge/js/pem"),
+  pkcs1: require("node-forge/js/pkcs1"),
+  pkcs5: require("node-forge/js/pkcs5"),
+  pkcs7: require("node-forge/js/pkcs7"),
+  pki: require("node-forge/js/x509"),
+  prime: require("node-forge/js/prime"),
+  prng: require("node-forge/js/prng"),
+  pss: require("node-forge/js/pss"),
+  random: require("node-forge/js/random"),
+  util: require("node-forge/js/util")
+};
+
+// load hash algorithms
+require("node-forge/js/sha1");
+require("node-forge/js/sha256");
+require("node-forge/js/sha512");
+
+// load symmetric cipherModes
+require("node-forge/js/cipherModes");
+
+// load AES cipher suites
+// TODO: move this to a separate file
+require("node-forge/js/aesCipherSuites");
+
+// Define AES "raw" cipher mode
+function modeRaw(options) {
+  options = options || {};
+  this.name = "";
+  this.cipher = options.cipher;
+  this.blockSize = options.blockSize || 16;
+  this._blocks = this.blockSize / 4;
+  this._inBlock = new Array(this._blocks);
+  this._outBlock = new Array(this._blocks);
+}
+
+modeRaw.prototype.start = function() {};
+
+modeRaw.prototype.encrypt = function(input, output) {
+  var i;
+
+  // get next block
+  for(i = 0; i < this._blocks; ++i) {
+    this._inBlock[i] = input.getInt32();
+  }
+
+  // encrypt block
+  this.cipher.encrypt(this._inBlock, this._outBlock);
+
+  // write output
+  for(i = 0; i < this._blocks; ++i) {
+    output.putInt32(this._outBlock[i]);
+  }
+};
+
+modeRaw.prototype.decrypt = function(input, output) {
+  var i;
+
+  // get next block
+  for(i = 0; i < this._blocks; ++i) {
+    this._inBlock[i] = input.getInt32();
+  }
+
+  // decrypt block
+  this.cipher.decrypt(this._inBlock, this._outBlock);
+
+  // write output
+  for(i = 0; i < this._blocks; ++i) {
+    output.putInt32(this._outBlock[i]);
+  }
+};
+
+(function() {
+  var name = "AES",
+      mode = modeRaw,
+      factory;
+  factory = function() { return new forge.aes.Algorithm(name, mode); };
+  forge.cipher.registerAlgorithm(name, factory);
+})();
+
+// Prevent nextTick from being used when possible
+if ("function" === typeof setImmediate) {
+  forge.util.setImmediate = forge.util.nextTick = function(callback) {
+    setImmediate(callback);
+  };
+}
+
+module.exports = forge;
+
+},{"node-forge/js/aes":163,"node-forge/js/aesCipherSuites":164,"node-forge/js/asn1":165,"node-forge/js/cipher":166,"node-forge/js/cipherModes":167,"node-forge/js/hmac":169,"node-forge/js/jsbn":170,"node-forge/js/md":171,"node-forge/js/mgf":173,"node-forge/js/pem":177,"node-forge/js/pkcs1":178,"node-forge/js/pkcs5":179,"node-forge/js/pkcs7":180,"node-forge/js/prime":183,"node-forge/js/prng":184,"node-forge/js/pss":185,"node-forge/js/random":186,"node-forge/js/sha1":188,"node-forge/js/sha256":189,"node-forge/js/sha512":190,"node-forge/js/util":192,"node-forge/js/x509":193}],28:[function(require,module,exports){
+/*!
+ * index.js - Main Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+if (typeof Promise === "undefined") {
+  require("es6-promise").polyfill();
+}
+
+module.exports = {
+  JWA: require("./algorithms"),
+  JWE: require("./jwe"),
+  JWK: require("./jwk"),
+  JWS: require("./jws"),
+  util: require("./util"),
+  parse: require("./parse")
+};
+
+},{"./algorithms":13,"./jwe":33,"./jwk":38,"./jws":44,"./parse":48,"./util":52,"es6-promise":55}],29:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwe/decrypt.js - Decrypt from a JWE
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var assign = require("lodash.assign"),
+    base64url = require("../util/base64url"),
+    JWK = require("../jwk"),
+    zlib = require("zlib");
+
+/**
+ * @class JWE.Decrypter
+ * @classdesc Processor of encrypted data.
+ *
+ * @description
+ * **NOTE:** This class cannot be instantiated directly. Instead
+ * call {@link JWE.createDecrypt}.
+ */
+function JWEDecrypter(ks) {
+  var assumedKey,
+    keystore;
+
+  if (JWK.isKey(ks)) {
+    assumedKey = ks;
+    keystore = assumedKey.keystore;
+  } else if (JWK.isKeyStore(ks)) {
+    keystore = ks;
+  } else {
+    throw new TypeError("Keystore must be provided");
+  }
+
+  Object.defineProperty(this, "decrypt", {
+    value: function(input) {
+      /* eslint camelcase: [0] */
+      if (typeof input === "string") {
+        input = input.split(".");
+        input = {
+          protected: input[0],
+          recipients: [
+            {
+              encrypted_key: input[1]
+            }
+          ],
+          iv: input[2],
+          ciphertext: input[3],
+          tag: input[4]
+        };
+      } else if (!input || typeof input !== "object") {
+        throw new Error("invalid input");
+      }
+      if ("encrypted_key" in input) {
+        input.recipients = [
+          {
+            encrypted_key: input.encrypted_key
+          }
+        ];
+      }
+
+      // ensure recipients exists
+      var rcptList = input.recipients || [{}];
+
+      //combine fields
+      var fields;
+      fields = input.protected ?
+           JSON.parse(base64url.decode(input.protected, "binary")) :
+           {};
+      fields = assign(input.unprotected || {}, fields);
+      rcptList = rcptList.map(function(r) {
+        var promise = Promise.resolve();
+        var header = r.header || {};
+        header = assign(header, fields);
+        r.header = header;
+        if (header.epk) {
+          promise = promise.then(function() {
+            return JWK.asKey(header.epk);
+          });
+          promise = promise.then(function(epk) {
+            header.epk = epk.toObject(false);
+          });
+        }
+        return promise.then(function() {
+          return r;
+        });
+      });
+
+      var promise = Promise.all(rcptList);
+
+      // decrypt with first key found
+      var algKey,
+        encKey,
+        kdata;
+      promise = promise.then(function(rcptList) {
+        var jwe = {};
+        return new Promise(function(resolve, reject) {
+          var processKey = function() {
+            var rcpt = rcptList.shift();
+            if (!rcpt) {
+              reject(new Error("no key found"));
+              return;
+            }
+
+            var algPromise;
+
+            var prekey = kdata = rcpt.encrypted_key || "";
+            prekey = base64url.decode(prekey);
+            algKey = assumedKey || keystore.get({
+              use: "enc",
+              alg: rcpt.header.alg,
+              kid: rcpt.header.kid
+            });
+            if (algKey) {
+              algPromise = algKey.unwrap(rcpt.header.alg, prekey, rcpt.header);
+            } else {
+              algPromise = Promise.reject();
+            }
+            algPromise.then(function(key) {
+              encKey = {
+                "kty": "oct",
+                "k": base64url.encode(key)
+              };
+              encKey = JWK.asKey(encKey);
+              jwe.key = algKey;
+              jwe.header = rcpt.header;
+              resolve(jwe);
+            }, processKey);
+          };
+          processKey();
+        });
+      });
+
+      // prepare decipher inputs
+      promise = promise.then(function(jwe) {
+        jwe.iv = input.iv;
+        jwe.tag = input.tag;
+        jwe.ciphertext = base64url.decode(input.ciphertext);
+
+        return jwe;
+      });
+
+      // decrypt it!
+      promise = promise.then(function(jwe) {
+        var adata = input.protected;
+        if ("aad" in input && null != input.aad) {
+          adata += "." + input.aad;
+        }
+
+        var params = {
+          iv: jwe.iv,
+          adata: adata,
+          tag: jwe.tag,
+          kdata: kdata,
+          epu: jwe.epu,
+          epv: jwe.epv
+        };
+        var cdata = jwe.ciphertext;
+
+        delete jwe.iv;
+        delete jwe.tag;
+        delete jwe.ciphertext;
+
+        return encKey.
+          then(function(enkKey) {
+            return enkKey.decrypt(jwe.header.enc, cdata, params).
+              then(function(pdata) {
+                jwe.payload = jwe.plaintext = pdata;
+                return jwe;
+              });
+          });
+      });
+
+      // (OPTIONAL) decompress plaintext
+      if (fields.zip === "DEF") {
+        promise = promise.then(function(jwe) {
+          return new Promise(function(resolve, reject) {
+            zlib.inflateRaw(new Buffer(jwe.plaintext), function(err, data) {
+              if (err) {
+                reject(err);
+              }
+              else {
+                jwe.payload = jwe.plaintext = data;
+                resolve(jwe);
+              }
+            });
+          });
+        });
+      }
+
+      return promise;
+    }
+  });
+}
+
+/**
+ * @description
+ * Creates a new Decrypter for the given Key or KeyStore.
+ *
+ * @param {JWK.Key|JWK.KeyStore} ks The Key or KeyStore to use for decryption.
+ * @returns {JWE.Decrypter} The new Decrypter.
+ */
+function createDecrypt(ks) {
+  var dec = new JWEDecrypter(ks);
+  return dec;
+}
+
+module.exports = {
+  decrypter: JWEDecrypter,
+  createDecrypt: createDecrypt
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../jwk":38,"../util/base64url":50,"buffer":204,"lodash.assign":57,"zlib":203}],30:[function(require,module,exports){
+/*!
+ * jwe/defaults.js - Defaults for JWEs
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+/**
+ * @description
+ * The default options for {@link JWE.createEncrypt}.
+ *
+ * @property {Boolean|String} zip Determines the compression algorithm to
+ *           apply to the plaintext (if any) before it is encrypted. This can
+ *           also be `true` (which is equivalent to `"DEF"`) or **`false`**
+ *           (the default, which is equivalent to no compression).
+ * @property {String} format Determines the serialization format of the
+ *           output.  Expected to be `"general"` for general JSON
+ *           Serialization, `"flattened"` for flattened JSON Serialization,
+ *           or `"compact"` for Compact Serialization (default is
+ *           **`"general"`**).
+ * @property {Boolean} compact Determines if the output is the Compact
+ *           serialization (`true`) or the JSON serialization (**`false`**,
+ *           the default).
+ * @property {String} contentAlg The algorithm used to encrypt the plaintext
+ *           (default is **`"A128CBC-HS256"`**).
+ * @property {String|String[]} protect The names of the headers to integrity
+ *           protect.  The value `""` means that none of header parameters
+ *           are integrity protected, while `"*"` (the default) means that all
+ *           headers parameter sare integrity protected.
+ */
+var JWEDefaults = {
+  zip: false,
+  format: "general",
+  contentAlg: "A128CBC-HS256",
+  protect: "*"
+};
+
+module.exports = JWEDefaults;
+
+},{}],31:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwe/encrypt.js - Encrypt to a JWE
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var assign = require("lodash.assign"),
+    clone = require("lodash.clone"),
+    util = require("../util"),
+    generateCEK = require("./helpers").generateCEK,
+    JWK = require("../jwk"),
+    slice = require("./helpers").slice,
+    zlib = require("zlib"),
+    CONSTANTS = require("../algorithms/constants");
+
+var DEFAULTS = require("./defaults");
+
+/**
+ * @class JWE.Encrypter
+ * @classdesc
+ * Generator of encrypted data.
+ *
+ * @description
+ * **NOTE:** This class cannot be instantiated directly. Instead call {@link
+ * JWE.createEncrypt}.
+ */
+function JWEEncrypter(cfg, fields, recipients) {
+  var finalized = false,
+    format = cfg.format || "general",
+    protectAll = !!cfg.protectAll,
+    content = new Buffer(0);
+
+  /**
+   * @member {String} JWE.Encrypter#zip
+   * @readonly
+   * @description
+   * Indicates the compression algorithm applied to the plaintext
+   * before it is encrypted.  The possible values are:
+   *
+   * + **`"DEF"`**: Compress the plaintext using the DEFLATE algorithm.
+   * + **`""`**: Do not compress the plaintext.
+   */
+  Object.defineProperty(this, "zip", {
+    get: function() {
+      return fields.zip || "";
+    },
+    enumerable: true
+  });
+  /**
+   * @member {Boolean} JWE.Encrypter#compact
+   * @readonly
+   * @description
+   * Indicates whether the output of this encryption generator is
+   * using the Compact serialization (`true`) or the JSON
+   * serialization (`false`).
+   */
+  Object.defineProperty(this, "compact", {
+    get: function() { return "compact" === format; },
+    enumerable: true
+  });
+  /**
+   * @member {String} JWE.Encrypter#format
+   * @readonly
+   * @description
+   * Indicates the format the output of this encryption generator takes.
+   */
+  Object.defineProperty(this, "format", {
+    get: function() { return format; },
+    enumerable: true
+  });
+  /**
+   * @member {String[]} JWE.Encrypter#protected
+   * @readonly
+   * @description
+   * The header parameter names that are protected. Protected header fields
+   * are first serialized to UTF-8 then encoded as util.base64url, then used as
+   * the additional authenticated data in the encryption operation.
+   */
+  Object.defineProperty(this, "protected", {
+    get: function() {
+      return clone(cfg.protect);
+    },
+    enumerable: true
+  });
+  /**
+   * @member {Object} JWE.Encrypter#header
+   * @readonly
+   * @description
+   * The global header parameters, both protected and unprotected. Call
+   * {@link JWE.Encrypter#protected} to determine which parameters will
+   * be protected.
+   */
+  Object.defineProperty(this, "header", {
+    get: function() {
+      return clone(fields);
+    },
+    enumerable: true
+  });
+
+  /**
+   * @method JWE.Encrypter#update
+   * @description
+   * Updates the plaintext data for the encryption generator. The plaintext
+   * is appended to the end of any other plaintext already applied.
+   *
+   * If {data} is a Buffer, {encoding} is ignored. Otherwise, {data} is
+   * converted to a Buffer internally to {encoding}.
+   *
+   * @param {Buffer|String} [data] The plaintext to apply.
+   * @param {String} [encoding] The encoding of the plaintext.
+   * @returns {JWE.Encrypter} This encryption generator.
+   * @throws {Error} If ciphertext has already been generated.
+   */
+  Object.defineProperty(this, "update", {
+    value: function(data, encoding) {
+      if (finalized) {
+        throw new Error("already final");
+      }
+      if (data != null) {
+        data = util.asBuffer(data, encoding);
+        if (content.length) {
+          content = Buffer.concat([content, data],
+                      content.length + data.length);
+        } else {
+          content = data;
+        }
+      }
+
+      return this;
+    }
+  });
+  /**
+   * @method JWE.Encrypter#final
+   * @description
+   * Finishes the encryption operation.
+   *
+   * The returned Promise, when fulfilled, is the JSON Web Encryption (JWE)
+   * object, either in the Compact (if {@link JWE.Encrypter#compact} is
+   * `true`) or the JSON serialization.
+   *
+   * @param {Buffer|String} [data] The final plaintext data to apply.
+   * @param {String} [encoding] The encoding of the final plaintext data
+   *        (if any).
+   * @returns {Promise} A promise for the encryption operation.
+   * @throws {Error} If ciphertext has already been generated.
+   */
+  Object.defineProperty(this, "final", {
+    value: function(data, encoding) {
+      if (finalized) {
+        return Promise.reject(new Error("already final"));
+      }
+
+      // last-minute data
+      this.update(data, encoding);
+
+      // mark as done...ish
+      finalized = true;
+      var promise = Promise.resolve({});
+
+      // determine CEK and IV
+      var encAlg = fields.enc;
+      var encKey;
+      promise = promise.then(function(jwe) {
+        if (cfg.cek) {
+          encKey = JWK.asKey(cfg.cek);
+        }
+        return jwe;
+      });
+
+      // process recipients
+      promise = promise.then(function(jwe) {
+        var procR = function(r, one) {
+          var props = {};
+          props = assign(props, fields);
+          props = assign(props, r.header);
+
+          var algKey = r.key,
+              algAlg = props.alg;
+
+          // generate Ephemeral EC Key
+          var tks,
+              rpromise;
+          if (props.alg.indexOf("ECDH-ES") === 0) {
+            tks = algKey.keystore.temp();
+            if (r.epk) {
+              rpromise = Promise.resolve(r.epk).
+                then(function(epk) {
+                  r.header.epk = epk.toJSON(false, ["kid"]);
+                  props.epk = epk.toObject(true, ["kid"]);
+                });
+            } else {
+              rpromise = tks.generate("EC", algKey.get("crv")).
+                then(function(epk) {
+                  r.header.epk = epk.toJSON(false, ["kid"]);
+                  props.epk = epk.toObject(true, ["kid"]);
+                });
+            }
+          } else {
+            rpromise = Promise.resolve();
+          }
+
+          // encrypt the CEK
+          rpromise = rpromise.then(function() {
+            var cek,
+                p;
+            // special case 'alg=dir'
+            if ("dir" === algAlg && one) {
+              encKey = Promise.resolve(algKey);
+              p = encKey.then(function(jwk) {
+                // fixup encAlg
+                if (!encAlg) {
+                  props.enc = fields.enc = encAlg = jwk.algorithms(JWK.MODE_ENCRYPT)[0];
+                }
+                return {
+                  once: true,
+                  direct: true
+                };
+              });
+            } else {
+              if (!encKey) {
+                if (!encAlg) {
+                  props.enc = fields.enc = encAlg = cfg.contentAlg;
+                }
+                encKey = generateCEK(encAlg);
+              }
+              p = encKey.then(function(jwk) {
+                cek = jwk.get("k", true);
+                // algKey may or may not be a promise
+                return algKey;
+              });
+              p = p.then(function(algKey) {
+                return algKey.wrap(algAlg, cek, props);
+              });
+            }
+            return p;
+          });
+          rpromise = rpromise.then(function(wrapped) {
+            if (wrapped.once && !one) {
+              return Promise.reject(new Error("cannot use 'alg':'" + algAlg + "' with multiple recipients"));
+            }
+
+            var rjwe = {},
+                cek;
+            if (wrapped.data) {
+              cek = wrapped.data;
+              cek = util.base64url.encode(cek);
+            }
+
+            if (wrapped.direct && cek) {
+              // replace content key
+              encKey = JWK.asKey({
+                kty: "oct",
+                k: cek
+              });
+            } else if (cek) {
+              /* eslint camelcase: [0] */
+              rjwe.encrypted_key = cek;
+            }
+
+            if (r.header && Object.keys(r.header).length) {
+              rjwe.header = clone(r.header || {});
+            }
+            if (wrapped.header) {
+              rjwe.header = assign(rjwe.header || {},
+                                     wrapped.header);
+            }
+
+            return rjwe;
+           });
+           return rpromise;
+        };
+
+        var p = Promise.all(recipients);
+        p = p.then(function(rcpts) {
+          var single = (1 === rcpts.length);
+          rcpts = rcpts.map(function(r) {
+            return procR(r, single);
+          });
+          return Promise.all(rcpts);
+        });
+        p = p.then(function(rcpts) {
+          jwe.recipients = rcpts.filter(function(r) { return !!r; });
+          return jwe;
+        });
+        return p;
+      });
+
+      // normalize headers
+      var props = {};
+      promise = promise.then(function(jwe) {
+        var protect,
+          lenProtect,
+          unprotect,
+          lenUnprotect;
+
+        unprotect = clone(fields);
+        if ((protectAll && jwe.recipients.length === 1) || "compact" === format) {
+          // merge single recipient into fields
+          protect = assign(jwe.recipients[0].header || {},
+                     unprotect);
+          lenProtect = Object.keys(protect).length;
+
+          unprotect = undefined;
+          lenUnprotect = 0;
+
+          delete jwe.recipients[0].header;
+          if (Object.keys(jwe.recipients[0]).length === 0) {
+            jwe.recipients.splice(0, 1);
+          }
+        } else {
+          protect = {};
+          lenProtect = 0;
+          lenUnprotect = Object.keys(unprotect).length;
+          cfg.protect.forEach(function(f) {
+            if (!(f in unprotect)) {
+              return;
+            }
+            protect[f] = unprotect[f];
+            lenProtect++;
+
+            delete unprotect[f];
+            lenUnprotect--;
+          });
+        }
+
+        if (!jwe.recipients || jwe.recipients.length === 0) {
+          delete jwe.recipients;
+        }
+
+        // "serialize" (and setup merged props)
+        if (unprotect && lenUnprotect > 0) {
+          props = assign(props, unprotect);
+          jwe.unprotected = unprotect;
+        }
+        if (protect && lenProtect > 0) {
+          props = assign(props, protect);
+          protect = JSON.stringify(protect);
+          jwe.protected = util.base64url.encode(protect, "utf8");
+        }
+
+        return jwe;
+      });
+
+      // (OPTIONAL) compress plaintext
+      promise = promise.then(function(jwe) {
+        var pdata = content;
+        if (!props.zip) {
+          jwe.plaintext = pdata;
+          return jwe;
+        } else if (props.zip === "DEF") {
+          return new Promise(function(resolve, reject) {
+            zlib.deflateRaw(new Buffer(pdata, "binary"), function(err, data) {
+              if (err) {
+                reject(err);
+              }
+              else {
+                jwe.plaintext = data;
+                resolve(jwe);
+              }
+            });
+          });
+        }
+        return Promise.reject(new Error("unsupported 'zip' mode"));
+      });
+
+      // encrypt plaintext
+      promise = promise.then(function(jwe) {
+        props.adata = jwe.protected;
+        if ("aad" in cfg && cfg.aad != null) {
+          props.adata += "." + cfg.aad;
+          props.adata = new Buffer(props.adata, "utf8");
+        }
+        // calculate IV
+        var iv = cfg.iv ||
+                 util.randomBytes(CONSTANTS.NONCELENGTH[encAlg] / 8);
+        if ("string" === typeof iv) {
+          iv = util.base64url.decode(iv);
+        }
+        props.iv = iv;
+
+        if ("recipients" in jwe && jwe.recipients.length === 1) {
+          props.kdata = jwe.recipients[0].encrypted_key;
+        }
+
+        if ("epu" in cfg && cfg.epu != null) {
+          props.epu = cfg.epu;
+        }
+
+        if ("epv" in cfg && cfg.epv != null) {
+          props.epv = cfg.epv;
+        }
+
+        var pdata = jwe.plaintext;
+        delete jwe.plaintext;
+        return encKey.then(function(encKey) {
+          var p = encKey.encrypt(encAlg, pdata, props);
+          p = p.then(function(result) {
+            jwe.iv = util.base64url.encode(iv, "binary");
+            if ("aad" in cfg && cfg.aad != null) {
+             jwe.aad = cfg.aad;
+            }
+            jwe.ciphertext = util.base64url.encode(result.data, "binary");
+            jwe.tag = util.base64url.encode(result.tag, "binary");
+            return jwe;
+          });
+          return p;
+        });
+      });
+
+      // (OPTIONAL) compact/flattened results
+      switch (format) {
+        case "compact":
+          promise = promise.then(function(jwe) {
+            var compact = new Array(5);
+
+            compact[0] = jwe.protected;
+            if (jwe.recipients && jwe.recipients[0]) {
+              compact[1] = jwe.recipients[0].encrypted_key;
+            }
+
+            compact[2] = jwe.iv;
+            compact[3] = jwe.ciphertext;
+            compact[4] = jwe.tag;
+            compact = compact.join(".");
+
+            return compact;
+          });
+          break;
+        case "flattened":
+          promise = promise.then(function(jwe) {
+            var flattened = {},
+                rcpt = jwe.recipients && jwe.recipients[0];
+
+            if (jwe.protected) {
+              flattened.protected = jwe.protected;
+            }
+            if (jwe.unprotected) {
+              flattened.unprotected = jwe.unprotected;
+            }
+            ["header", "encrypted_key"].forEach(function(f) {
+              if (!rcpt) { return; }
+              if (!(f in rcpt)) { return; }
+              flattened[f] = rcpt[f];
+            });
+            if (jwe.aad) {
+              flattened.aad = jwe.aad;
+            }
+            flattened.iv = jwe.iv;
+            flattened.ciphertext = jwe.ciphertext;
+            flattened.tag = jwe.tag;
+
+            return flattened;
+          });
+          break;
+      }
+
+      return promise;
+    }
+  });
+}
+
+function createEncrypt(opts, rcpts) {
+  // fixup recipients
+  var options = opts,
+    rcptStart = 1,
+    rcptList = rcpts;
+
+  if (arguments.length === 0) {
+    throw new Error("at least one recipient must be provided");
+  }
+  if (arguments.length === 1) {
+    // assume opts is the recipient list
+    rcptList = opts;
+    rcptStart = 0;
+    options = {};
+  } else if (JWK.isKey(opts) ||
+        (opts && "kty" in opts) ||
+        (opts && "key" in opts &&
+        (JWK.isKey(opts.key) || "kty" in opts.key))) {
+    rcptList = opts;
+    rcptStart = 0;
+    options = {};
+  } else {
+    options = clone(opts);
+  }
+  if (!Array.isArray(rcptList)) {
+    rcptList = slice(arguments, rcptStart);
+  }
+
+  // fixup options
+  options = assign(clone(DEFAULTS), options);
+
+  // setup header fields
+  var fields = clone(options.fields || {});
+  if (options.zip) {
+    fields.zip = (typeof options.zip === "boolean") ?
+           (options.zip ? "DEF" : false) :
+           options.zip;
+  }
+  options.format = (options.compact ? "compact" : options.format) || "general";
+  switch (options.format) {
+    case "compact":
+      if ("aad" in opts) {
+        throw new Error("additional authenticated data cannot be used for compact serialization");
+      }
+      /* eslint no-fallthrough: [0] */
+    case "flattened":
+      if (rcptList.length > 1) {
+        throw new Error("too many recipients for compact serialization");
+      }
+      break;
+  }
+
+  // note protected fields (globally)
+  // protected fields are global only
+  var protectAll = false;
+  if ("compact" === options.format || "*" === options.protect) {
+    protectAll = true;
+    options.protect = Object.keys(fields).concat("enc");
+  } else if (typeof options.protect === "string") {
+    options.protect = [options.protect];
+  } else if (Array.isArray(options.protect)) {
+    options.protect = options.protect.concat();
+  } else if (!options.protect) {
+    options.protect = [];
+  } else {
+    throw new Error("protect must be a list of fields");
+  }
+
+  if (protectAll && 1 < rcptList.length) {
+    throw new Error("too many recipients to protect all header parameters");
+  }
+
+  rcptList = rcptList.map(function(r, idx) {
+    var p;
+
+    // resolve a key
+    if (r && "kty" in r) {
+      p = JWK.asKey(r);
+      p = p.then(function(k) {
+        return {
+          key: k
+        };
+      });
+    } else if (r) {
+      p = JWK.asKey(r.key);
+      p = p.then(function(k) {
+        return {
+          header: r.header,
+          reference: r.reference,
+          key: k
+        };
+      });
+    } else {
+      p = Promise.reject(new Error("missing key for recipient " + idx));
+    }
+
+    // convert ephemeral key (if present)
+    if (r.epk) {
+      p = p.then(function(recipient) {
+        return JWK.asKey(r.epk).
+          then(function(epk) {
+            recipient.epk = epk;
+            return recipient;
+          });
+      });
+    }
+
+    // resolve the complete recipient
+    p = p.then(function(recipient) {
+      var key = recipient.key;
+
+      // prepare the recipient header
+      var header = recipient.header || {};
+      recipient.header = header;
+      var props = {};
+      props = assign(props, fields);
+      props = assign(props, recipient.header);
+
+      // ensure key protection algorithm is set
+      if (!props.alg) {
+        props.alg = key.algorithms(JWK.MODE_WRAP)[0];
+      }
+      header.alg = props.alg;
+
+      // determine the key reference
+      var ref = recipient.reference;
+      delete recipient.reference;
+      if (undefined === ref) {
+        // header already contains the key reference
+        ref = ["kid", "jku", "x5c", "x5t", "x5u"].some(function(k) {
+          return (k in header);
+        });
+        ref = !ref ? "kid" : null;
+      } else if ("boolean" === typeof ref) {
+        // explicit (positive | negative) request for key reference
+        ref = ref ? "kid" : null;
+      }
+      var jwk;
+      if (ref) {
+        jwk = key.toJSON();
+        if ("jwk" === ref) {
+          header.jwk = jwk;
+        } else if (ref in jwk) {
+          header[ref] = jwk[ref];
+        }
+      }
+
+      // freeze recipient
+      recipient = Object.freeze(recipient);
+      return recipient;
+    });
+
+    return p;
+  });
+
+  // create and configure encryption
+  var cfg = {
+    aad: ("aad" in options) ? util.base64url.encode(options.aad || "") : null,
+    contentAlg: options.contentAlg,
+    format: options.format,
+    protect: options.protect,
+    cek: options.cek,
+    iv: options.iv,
+    protectAll: protectAll
+  };
+  var enc = new JWEEncrypter(cfg, fields, rcptList);
+
+  return enc;
+}
+
+module.exports = {
+  encrypter: JWEEncrypter,
+  createEncrypt: createEncrypt
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../algorithms/constants":5,"../jwk":38,"../util":52,"./defaults":30,"./helpers":32,"buffer":204,"lodash.assign":57,"lodash.clone":68,"zlib":203}],32:[function(require,module,exports){
+/*!
+ * jwe/helpers.js - JWE Internal Helper Functions
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var CONSTANTS = require("../algorithms/constants"),
+    JWK = require("../jwk");
+
+module.exports = {
+  slice: function(input, start) {
+    return Array.prototype.slice.call(input, start || 0);
+  },
+  generateCEK: function(enc) {
+    var ks = JWK.createKeyStore();
+    var len = CONSTANTS.KEYLENGTH[enc];
+
+    if (len) {
+        return ks.generate("oct", len);
+    }
+
+    throw new Error("unsupported encryption algorithm");
+  }
+};
+
+},{"../algorithms/constants":5,"../jwk":38}],33:[function(require,module,exports){
+/*!
+ * jwe/index.js - JSON Web Encryption (JWE) Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var JWE = {
+  createEncrypt: require("./encrypt").createEncrypt,
+  createDecrypt: require("./decrypt").createDecrypt
+};
+
+module.exports = JWE;
+
+},{"./decrypt":29,"./encrypt":31}],34:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwk/basekey.js - JWK Key Base Class Implementation
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var assign = require("lodash.assign"),
+    clone = require("lodash.clone"),
+    flatten = require("lodash.flatten"),
+    intersection = require("lodash.intersection"),
+    merge = require("../util/merge"),
+    omit = require("lodash.omit"),
+    pick = require("lodash.pick"),
+    uniq = require("lodash.uniq"),
+    uuid = require("uuid");
+
+var ALGORITHMS = require("../algorithms"),
+    CONSTANTS = require("./constants.js"),
+    HELPERS = require("./helpers.js"),
+    UTIL = require("../util");
+
+/**
+ * @class JWK.Key
+ * @classdesc
+ * Represents a JSON Web Key instance.
+ *
+ * @description
+ * **NOTE:** This class cannot be instantiated directly. Instead call
+ * {@link JWK.asKey}, {@link JWK.KeyStore#add}, or
+ * {@link JWK.KeyStore#generate}.
+ */
+var JWKBaseKeyObject = function(kty, ks, props, cfg) {
+  // ### validate/coerce arguments ###
+  if (!kty) {
+    throw new Error("kty cannot be null");
+  }
+
+  if (!ks) {
+    throw new Error("keystore cannot be null");
+  }
+
+  if (!props) {
+    throw new Error("props cannot be null");
+  } else if ("string" === typeof props) {
+    props = JSON.parse(props);
+  }
+
+  if (!cfg) {
+    throw new Error("cfg cannot be null");
+  }
+
+  var excluded = [];
+  var keys = {},
+      json = {},
+      prints,
+      kid;
+
+  props = clone(props);
+  // strip thumbprints if present
+  prints = assign({}, props[HELPERS.INTERNALS.THUMBPRINT_KEY] || {});
+  delete props[HELPERS.INTERNALS.THUMBPRINT_KEY];
+  Object.keys(prints).forEach(function(a) {
+    var h = prints[a];
+    if (!kid) {
+      kid = h;
+      if (Buffer.isBuffer(kid)) {
+        kid = UTIL.base64url.encode(kid);
+      }
+    }
+    if (!Buffer.isBuffer(h)) {
+      h = UTIL.base64url.decode(h);
+      prints[a] = h;
+    }
+  });
+
+  // force certain values
+  props.kty = kty;
+  props.kid = props.kid || kid || uuid();
+
+  // setup base info
+  var included = Object.keys(HELPERS.COMMON_PROPS).map(function(p) {
+    return HELPERS.COMMON_PROPS[p].name;
+  });
+  json.base = pick(props, included);
+  excluded = excluded.concat(Object.keys(json.base));
+
+  // setup public information
+  json.public = clone(props);
+  keys.public = cfg.publicKey(json.public);
+  if (keys.public) {
+    // exclude public values from extra
+    excluded = excluded.concat(Object.keys(json.public));
+  }
+
+  // setup private information
+  json.private = clone(props);
+  keys.private = cfg.privateKey(json.private);
+  if (keys.private) {
+    // exclude private values from extra
+    excluded = excluded.concat(Object.keys(json.private));
+  }
+
+  // setup extra information
+  json.extra = omit(props, excluded);
+
+  // TODO: validate 'alg' against supported algorithms
+
+  // setup calculated values
+  var keyLen;
+  if (keys.public && ("length" in keys.public)) {
+    keyLen = keys.public.length;
+  } else if (keys.private && ("length" in keys.private)) {
+    keyLen = keys.private.length;
+  } else {
+    keyLen = NaN;
+  }
+
+  // ### Public Properties ###
+  /**
+   * @member {JWK.KeyStore} JWK.Key#keystore
+   * @description
+   * The owning keystore.
+   */
+  Object.defineProperty(this, "keystore", {
+    value: ks,
+    enumerable: true
+  });
+  /**
+   * @member {Number} JWK.Key#length
+   * @description
+   * The size of this Key, in bits.
+   */
+  Object.defineProperty(this, "length", {
+    value: keyLen,
+    enumerable: true
+  });
+  /**
+   * @member {String} JWK.Key#kty
+   * @description
+   * The type of Key.
+   */
+  Object.defineProperty(this, "kty", {
+    value: kty,
+    enumerable: true
+  });
+
+  /**
+   * @member {String} JWK.Key#kid
+   * @description
+   * The identifier for this Key.
+   */
+  Object.defineProperty(this, "kid", {
+    value: json.base.kid,
+    enumerable: true
+  });
+  /**
+   * @member {String} JWK.Key#use
+   * @description
+   * The usage for this Key.
+   */
+  Object.defineProperty(this, "use", {
+    value: json.base.use || "",
+    enumerable: true
+  });
+  /**
+   * @member {String} JWK.Key#alg
+   * @description
+   * The sole algorithm this key can be used for.
+   */
+  Object.defineProperty(this, "alg", {
+    value: json.base.alg || "",
+    enumerable: true
+  });
+
+  // ### Public Methods ###
+  /**
+   * Generates the thumbprint of this Key.
+   *
+   * @param {String} [] The hash algorithm to use
+   * @returns {Promise} The promise for the thumbprint generation.
+   */
+  Object.defineProperty(this, "thumbprint", {
+    value: function(hash) {
+      hash = (hash || HELPERS.INTERNALS.THUMBPRINT_HASH).toUpperCase();
+      if (prints[hash]) {
+        // return cached value
+        return Promise.resolve(prints[hash]);
+      }
+      var p = HELPERS.thumbprint(cfg, json, hash);
+      p = p.then(function(result) {
+        if (result) {
+          prints[hash] = result;
+        }
+        return result;
+      });
+      return p;
+    }
+  });
+  /**
+   * @method JWK.Key#algorithms
+   * @description
+   * The possible algorithms this Key can be used for. The returned
+   * list is not any particular order, but is filtered based on the
+   * Key's intended usage.
+   *
+   * @param {String} mode The operation mode
+   * @returns {String[]} The list of supported algorithms
+   * @see JWK.Key#supports
+   */
+  Object.defineProperty(this, "algorithms", {
+    value: function(mode) {
+      var modes = [];
+      if (!this.use || this.use === "sig") {
+        if (!mode || CONSTANTS.MODE_SIGN === mode) {
+          modes.push(CONSTANTS.MODE_SIGN);
+        }
+        if (!mode || CONSTANTS.MODE_VERIFY === mode) {
+          modes.push(CONSTANTS.MODE_VERIFY);
+        }
+      }
+      if (!this.use || this.use === "enc") {
+        if (!mode || CONSTANTS.MODE_ENCRYPT === mode) {
+          modes.push(CONSTANTS.MODE_ENCRYPT);
+        }
+        if (!mode || CONSTANTS.MODE_DECRYPT === mode) {
+          modes.push(CONSTANTS.MODE_DECRYPT);
+        }
+        if (!mode || CONSTANTS.MODE_WRAP === mode) {
+          modes.push(CONSTANTS.MODE_WRAP);
+        }
+        if (!mode || CONSTANTS.MODE_UNWRAP === mode) {
+          modes.push(CONSTANTS.MODE_UNWRAP);
+        }
+      }
+
+      var self = this;
+      var algs = modes.map(function(m) {
+        return cfg.algorithms.call(self, keys, m);
+      });
+      algs = flatten(algs);
+      algs = uniq(algs);
+      if (this.alg) {
+        // TODO: fix this correctly
+        var valid;
+        if ("oct" === kty) {
+          valid = [this.alg, "dir"];
+        } else {
+          valid = [this.alg];
+        }
+        algs = intersection(algs, valid);
+      }
+
+      return algs;
+    }
+  });
+  /**
+   * @method JWK.Key#supports
+   * @description
+   * Determines if the given algorithm is supported.
+   *
+   * @param {String} alg The algorithm in question
+   * @param {String} [mode] The operation mode
+   * @returns {Boolean} `true` if {alg} is supported, and `false` otherwise.
+   * @see JWK.Key#algorithms
+   */
+  Object.defineProperty(this, "supports", {
+    value: function(alg, mode) {
+      return (this.algorithms(mode).indexOf(alg) !== -1);
+    }
+  });
+  /**
+   * @method JWK.Key#has
+   * @description
+   * Determines if this Key contains the given parameter.
+   *
+   * @param {String} name The name of the parameter
+   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
+   *        checked.
+   * @returns {Boolean} `true` if the given parameter is present; `false`
+   *          otherwise.
+   */
+  Object.defineProperty(this, "has", {
+    value: function(name, isPrivate) {
+      var contains = false;
+      contains = contains || !!(json.base &&
+                                (name in json.base));
+      contains = contains || !!(keys.public &&
+                                (name in keys.public));
+      contains = contains || !!(json.extra &&
+                                (name in json.extra));
+      contains = contains || !!(isPrivate &&
+                                keys.private &&
+                                (name in keys.private));
+      // TODO: check for export restrictions
+
+      return contains;
+    }
+  });
+  /**
+   * @method JWK.Key#get
+   * @description
+   * Retrieves the value of the given parameter. The value returned by this
+   * method is in its natural format, which might not exactly match its
+   * JSON encoding (e.g., a binary string rather than a base64url-encoded
+   * string).
+   *
+   * **NOTE:** This method can return `false`. Call
+   * {@link JWK.Key#has} to determine if the parameter is present.
+   *
+   * @param {String} name The name of the parameter
+   * @param {Boolean} [isPrivate=false] `true` if private parameters should
+   *        be checked.
+   * @returns {any} The value of the named parameter, or undefined if
+   *          it is not present.
+   */
+  Object.defineProperty(this, "get", {
+    value: function(name, isPrivate) {
+      var src;
+      if (json.base && (name in json.base)) {
+        src = json.base;
+      } else if (keys.public && (name in keys.public)) {
+        src = keys.public;
+      } else if (json.extra && (name in json.extra)) {
+        src = json.extra;
+      } else if (isPrivate && keys.private && (name in keys.private)) {
+        // TODO: check for export restrictions
+        src = keys.private;
+      }
+
+      return src && src[name] || null;
+    }
+  });
+  /**
+   * @method JWK.Key#toJSON
+   * @description
+   * Returns the JSON representation of this Key.  All properties of the
+   * returned JSON object are properly encoded (e.g., base64url encoding for
+   * any binary strings).
+   *
+   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
+   *        included.
+   * @param {String[]} [excluded] The list of parameters to exclude from
+   *        the returned JSON.
+   * @returns {Object} The plain JSON object
+   */
+  Object.defineProperty(this, "toJSON", {
+    value: function(isPrivate, excluded) {
+      // coerce arguments
+      if (Array.isArray(isPrivate)) {
+        excluded = isPrivate;
+        isPrivate = false;
+      }
+      var result = {};
+
+      // TODO: check for export restrictions
+      result = merge(result,
+                       json.base,
+                       json.public,
+                       ("boolean" === typeof isPrivate && isPrivate) ? json.private : {},
+                       json.extra);
+      result = omit(result, excluded || []);
+
+      return result;
+    }
+  });
+
+  /**
+   * @method JWK.Key#toPEM
+   * @description
+   * Returns the PEM representation of this Key as a string.
+   *
+   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
+   *        included.
+   * @returns {string} The PEM-encoded string
+   */
+  Object.defineProperty(this, "toPEM", {
+    value: function(isPrivate) {
+      if (isPrivate === null) {
+        isPrivate = false;
+      }
+
+      if (!cfg.convertToPEM) {
+        throw new Error("Unsupported key type for PEM encoding");
+      }
+      var k = (isPrivate) ? keys.private : keys.public;
+      if (!k) {
+        throw new Error("Invalid key");
+      }
+      return cfg.convertToPEM.call(this, k, isPrivate);
+    }
+  });
+
+  /**
+   * @method JWK.Key#toObject
+   * @description
+   * Returns the plain object representing this Key.  All properties of the
+   * returned object are in their natural encoding (e.g., binary strings
+   * instead of base64url encoded).
+   *
+   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
+   *        included.
+   * @param {String[]} [excluded] The list of parameters to exclude from
+   *        the returned object.
+   * @returns {Object} The plain Object.
+   */
+  Object.defineProperty(this, "toObject", {
+    value: function(isPrivate, excluded) {
+      // coerce arguments
+      if (Array.isArray(isPrivate)) {
+        excluded = isPrivate;
+        isPrivate = false;
+      }
+      var result = {};
+
+      // TODO: check for export restrictions
+      result = merge(result,
+                       json.base,
+                       keys.public,
+                       ("boolean" === typeof isPrivate && isPrivate) ? keys.private : {},
+                       json.extra);
+      result = omit(result, (excluded || []).concat("length"));
+
+      return result;
+    }
+  });
+
+  /**
+   * @method JWK.Key#sign
+   * @description
+   * Sign the given data using the specified algorithm.
+   *
+   * **NOTE:** This is the primitive signing operation; the output is
+   * _**NOT**_ a JSON Web Signature (JWS) object.
+   *
+   * The Promise, when fulfilled, returns an Object with the following
+   * properties:
+   *
+   * + **data**: The data that was signed (and should be equal to {data}).
+   * + **mac**: The signature or message authentication code (MAC).
+   *
+   * @param {String} alg The signing algorithm
+   * @param {String|Buffer} data The data to sign
+   * @param {Object} [props] Additional properties for the signing
+   *        algorithm.
+   * @returns {Promise} The promise for the signing operation.
+   * @throws {Error} If {alg} is not appropriate for this Key; or if
+   *         this Key does not contain the appropriate parameters.
+   */
+  Object.defineProperty(this, "sign", {
+    value: function(alg, data, props) {
+      // validate appropriateness
+      if (this.algorithms("sign").indexOf(alg) === -1) {
+        return Promise.reject(new Error("unsupported algorithm"));
+      }
+      var k = cfg.signKey.call(this, alg, keys);
+      if (!k) {
+        return Promise.reject(new Error("improper key"));
+      }
+
+      // prepare properties (if any)
+      props = (props) ?
+              clone(props) :
+              {};
+      if (cfg.signProps) {
+        props = merge(props, cfg.signProps.call(this, alg, props));
+      }
+      return ALGORITHMS.sign(alg, k, data, props);
+    }
+  });
+  /**
+   * @method JWK.Key#verify
+   * @description
+   * Verify the given data and signature using the specified algorithm.
+   *
+   * **NOTE:** This is the primitive verification operation; the input is
+   * _**NOT**_ a JSON Web Signature.</p>
+   *
+   * The Promise, when fulfilled, returns an Object with the following
+   * properties:
+   *
+   * + **data**: The data that was verified (and should be equal to
+   *   {data}).
+   * + **mac**: The signature or MAC that was verified (and should be equal
+   *   to {mac}).
+   * + **valid**: `true` if {mac} is valid for {data}.
+   *
+   * @param {String} alg The verification algorithm
+   * @param {String|Buffer} data The data to verify
+   * @param {String|Buffer} mac The signature or MAC to verify
+   * @param {Object} [props] Additional properties for the verification
+   *        algorithm.
+   * @returns {Promise} The promise for the verification operation.
+   * @throws {Error} If {alg} is not appropriate for this Key; or if
+   *         the Key does not contain the appropriate properties.
+   */
+  Object.defineProperty(this, "verify", {
+    value: function(alg, data, mac, props) {
+      // validate appropriateness
+      if (this.algorithms("verify").indexOf(alg) === -1) {
+        return Promise.reject(new Error("unsupported algorithm"));
+      }
+      var k = cfg.verifyKey.call(this, alg, keys);
+      if (!k) {
+        return Promise.reject(new Error("improper key"));
+      }
+
+      // prepare properties (if any)
+      props = (props) ?
+              clone(props) :
+              {};
+      if (cfg.verifyProps) {
+        props = merge(props, cfg.verifyProps.call(this, alg, props));
+      }
+      return ALGORITHMS.verify(alg, k, data, mac, props);
+    }
+  });
+
+  /**
+   * @method JWK.Key#encrypt
+   * @description
+   * Encrypts the given data using the specified algorithm.
+   *
+   * **NOTE:** This is the primitive encryption operation; the output is
+   * _**NOT**_ a JSON Web Encryption (JWE) object.
+   *
+   * **NOTE:** This operation is treated as distinct from {@link
+   * JWK.Key#wrap}, as different algorithms and properties are often
+   * used for wrapping a key versues encrypting arbitrary data.
+   *
+   * The Promise, when fulfilled, returns an object with the following
+   * properties:
+   *
+   * + **data**: The ciphertext data
+   * + **mac**: The associated message authentication code (MAC).
+   *
+   * @param {String} alg The encryption algorithm
+   * @param {Buffer|String} data The data to encrypt
+   * @param {Object} [props] Additional properties for the encryption
+   *        algorithm.
+   * @returns {Promise} The promise for the encryption operation.
+   * @throws {Error} If {alg} is not appropriate for this Key; or if
+   *         this Key does not contain the appropriate parameters.
+   */
+  Object.defineProperty(this, "encrypt", {
+    value: function(alg, data, props) {
+      // validate appropriateness
+      if (this.algorithms("encrypt").indexOf(alg) === -1) {
+        return Promise.reject(new Error("unsupported algorithm"));
+      }
+      var k = cfg.encryptKey.call(this, alg, keys);
+      if (!k) {
+        return Promise.reject(new Error("improper key"));
+      }
+
+      // prepare properties (if any)
+      props = (props) ?
+              clone(props) :
+              {};
+      if (cfg.encryptProps) {
+        props = merge(props, cfg.encryptProps.call(this, alg, props));
+      }
+      return ALGORITHMS.encrypt(alg, k, data, props);
+    }
+  });
+  /**
+   * @method JWK.Key#decrypt
+   * @description
+   * Decrypts the given data using the specified algorithm.
+   *
+   * **NOTE:** This is the primitive decryption operation; the input is
+   * _**NOT**_ a JSON Web Encryption (JWE) object.
+   *
+   * **NOTE:** This operation is treated as distinct from {@link
+   * JWK.Key#unwrap}, as different algorithms and properties are often used
+   * for unwrapping a key versues decrypting arbitrary data.
+   *
+   * The Promise, when fulfilled, returns the plaintext data.
+   *
+   * @param {String} alg The decryption algorithm.
+   * @param {Buffer|String} data The data to decypt.
+   * @param {Object} [props] Additional data for the decryption operation.
+   * @returns {Promise} The promise for the decryption operation.
+   * @throws {Error} If {alg} is not appropriate for this Key; or if
+   *         the Key does not contain the appropriate properties.
+   */
+  Object.defineProperty(this, "decrypt", {
+    value: function(alg, data, props) {
+      // validate appropriateness
+      if (this.algorithms("decrypt").indexOf(alg) === -1) {
+        return Promise.reject(new Error("unsupported algorithm"));
+      }
+      var k = cfg.decryptKey.call(this, alg, keys);
+      if (!k) {
+        return Promise.reject(new Error("improper key"));
+      }
+
+      // prepare properties (if any)
+      props = (props) ?
+              clone(props) :
+              {};
+      if (cfg.decryptProps) {
+        props = merge(props, cfg.decryptProps.call(this, alg, props));
+      }
+      return ALGORITHMS.decrypt(alg, k, data, props);
+    }
+  });
+
+  /**
+   * @method JWK.Key#wrap
+   * @description
+   * Wraps the given key using the specified algorithm.
+   *
+   * **NOTE:** This is the primitive encryption operation; the output is
+   * _**NOT**_ a JSON Web Encryption (JWE) object.
+   *
+   * **NOTE:** This operation is treated as distinct from {@link
+   * JWK.Key#encrypt}, as different algorithms and properties are
+   * often used for wrapping a key versues encrypting arbitrary data.
+   *
+   * The Promise, when fulfilled, returns an object with the following
+   * properties:
+   *
+   * + **data**: The ciphertext data
+   * + **headers**: The additional header parameters to apply to a JWE.
+   *
+   * @param {String} alg The encryption algorithm
+   * @param {Buffer|String} data The data to encrypt
+   * @param {Object} [props] Additional properties for the encryption
+   *        algorithm.
+   * @returns {Promise} The promise for the encryption operation.
+   * @throws {Error} If {alg} is not appropriate for this Key; or if
+   *         this Key does not contain the appropriate parameters.
+   */
+  Object.defineProperty(this, "wrap", {
+    value: function(alg, data, props) {
+      // validate appropriateness
+      if (this.algorithms("wrap").indexOf(alg) === -1) {
+        return Promise.reject(new Error("unsupported algorithm"));
+      }
+      var k = cfg.wrapKey.call(this, alg, keys);
+      if (!k) {
+        return Promise.reject(new Error("improper key"));
+      }
+
+      // prepare properties (if any)
+      props = (props) ?
+              clone(props) :
+              {};
+      if (cfg.wrapProps) {
+        props = merge(props, cfg.wrapProps.call(this, alg, props));
+      }
+      return ALGORITHMS.encrypt(alg, k, data, props);
+    }
+  });
+  /**
+   * @method JWK.Key#unwrap
+   * @description
+   * Unwraps the given key using the specified algorithm.
+   *
+   * **NOTE:** This is the primitive unwrap operation; the input is
+   * _**NOT**_ a JSON Web Encryption (JWE) object.
+   *
+   * **NOTE:** This operation is treated as distinct from {@link
+   * JWK.Key#decrypt}, as different algorithms and properties are often used
+   * for unwrapping a key versues decrypting arbitrary data.
+   *
+   * The Promise, when fulfilled, returns the unwrapped key.
+   *
+   * @param {String} alg The unwrap algorithm.
+   * @param {Buffer|String} data The data to unwrap.
+   * @param {Object} [props] Additional data for the unwrap operation.
+   * @returns {Promise} The promise for the unwrap operation.
+   * @throws {Error} If {alg} is not appropriate for this Key; or if
+   *         the Key does not contain the appropriate properties.
+   */
+  Object.defineProperty(this, "unwrap", {
+    value: function(alg, data, props) {
+      // validate appropriateness
+      if (this.algorithms("unwrap").indexOf(alg) === -1) {
+        return Promise.reject(new Error("unsupported algorithm"));
+      }
+      var k = cfg.unwrapKey.call(this, alg, keys);
+      if (!k) {
+        return Promise.reject(new Error("improper key"));
+      }
+
+      // prepare properties (if any)
+      props = (props) ?
+              clone(props) :
+              {};
+      if (cfg.unwrapProps) {
+        props = merge(props, cfg.unwrapProps.call(this, alg, props));
+      }
+      return ALGORITHMS.decrypt(alg, k, data, props);
+    }
+  });
+};
+
+module.exports = JWKBaseKeyObject;
+
+}).call(this,{"isBuffer":require("../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js")})
+},{"../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js":210,"../algorithms":13,"../util":52,"../util/merge":53,"./constants.js":35,"./helpers.js":37,"lodash.assign":57,"lodash.clone":68,"lodash.flatten":82,"lodash.intersection":87,"lodash.omit":110,"lodash.pick":133,"lodash.uniq":145,"uuid":198}],35:[function(require,module,exports){
+/*!
+ * jwk/constants.js - Constants for JWKs
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+module.exports = {
+  MODE_SIGN: "sign",
+  MODE_VERIFY: "verify",
+  MODE_ENCRYPT: "encrypt",
+  MODE_DECRYPT: "decrypt",
+  MODE_WRAP: "wrap",
+  MODE_UNWRAP: "unwrap"
+};
+
+},{}],36:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwk/rsa.js - RSA Key Representation
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var ecutil = require("../algorithms/ec-util.js"),
+    forge = require("../deps/forge"),
+    depsecc = require("../deps/ecc");
+
+var JWK = {
+  BaseKey: require("./basekey.js"),
+  helpers: require("./helpers.js")
+};
+
+var SIG_ALGS = [
+  "ES256",
+  "ES384",
+  "ES512"
+];
+var WRAP_ALGS = [
+  "ECDH-ES",
+  "ECDH-ES+A128KW",
+  "ECDH-ES+A192KW",
+  "ECDH-ES+A256KW"
+];
+
+var EC_OID = "1.2.840.10045.2.1";
+function oidToCurveName(oid) {
+  switch (oid) {
+    case "1.2.840.10045.3.1.7":
+      return "P-256";
+    case "1.3.132.0.34":
+      return "P-384";
+    case "1.3.132.0.35":
+      return "P-521";
+    default:
+      return null;
+  }
+}
+function curveNameToOid(crv) {
+  switch (crv) {
+    case "P-256":
+      return "1.2.840.10045.3.1.7";
+    case "P-384":
+      return "1.3.132.0.34";
+    case "P-521":
+      return "1.3.132.0.35";
+    default:
+      return null;
+  }
+}
+
+var JWKEcCfg = {
+  publicKey: function(props) {
+    var fields = JWK.helpers.COMMON_PROPS.concat([
+      {name: "crv", type: "string"},
+      {name: "x", type: "binary"},
+      {name: "y", type: "binary"}
+    ]);
+    var pk = JWK.helpers.unpackProps(props, fields);
+    if (pk && pk.crv && pk.x && pk.y) {
+      pk.length = ecutil.curveSize(pk.crv);
+    } else {
+      delete pk.crv;
+      delete pk.x;
+      delete pk.y;
+    }
+
+    return pk;
+  },
+  privateKey: function(props) {
+    var fields = JWK.helpers.COMMON_PROPS.concat([
+      {name: "crv", type: "string"},
+      {name: "x", type: "binary"},
+      {name: "y", type: "binary"},
+      {name: "d", type: "binary"}
+    ]);
+    var pk = JWK.helpers.unpackProps(props, fields);
+    if (pk && pk.crv && pk.x && pk.y && pk.d) {
+      pk.length = ecutil.curveSize(pk.crv);
+    } else {
+      pk = undefined;
+    }
+
+    return pk;
+  },
+  thumbprint: function(json) {
+    if (json.public) {
+      json = json.public;
+    }
+    var fields = {
+      crv: json.crv,
+      kty: "EC",
+      x: json.x,
+      y: json.y
+    };
+    return fields;
+  },
+  algorithms: function(keys, mode) {
+    var len = (keys.public && keys.public.length) ||
+              (keys.private && keys.private.length) ||
+              0;
+    // NOTE: 521 is the actual, but 512 is the expected
+    if (len === 521) {
+        len = 512;
+    }
+
+    switch (mode) {
+      case "encrypt":
+      case "decrypt":
+        return [];
+      case "wrap":
+        return (keys.public && WRAP_ALGS) || [];
+      case "unwrap":
+        return (keys.private && WRAP_ALGS) || [];
+      case "sign":
+        if (!keys.private) {
+          return [];
+        }
+        return SIG_ALGS.filter(function(a) {
+          return (a === ("ES" + len));
+        });
+      case "verify":
+        if (!keys.public) {
+          return [];
+        }
+        return SIG_ALGS.filter(function(a) {
+          return (a === ("ES" + len));
+        });
+    }
+  },
+
+  encryptKey: function(alg, keys) {
+    return keys.public;
+  },
+  decryptKey: function(alg, keys) {
+    return keys.private;
+  },
+
+  wrapKey: function(alg, keys) {
+    return keys.public;
+  },
+  unwrapKey: function(alg, keys) {
+    return keys.private;
+  },
+
+  signKey: function(alg, keys) {
+    return keys.private;
+  },
+  verifyKey: function(alg, keys) {
+    return keys.public;
+  },
+
+  convertToPEM: function(key, isPrivate) {
+    // curveName to OID
+    var oid = key.crv;
+    oid = curveNameToOid(oid);
+    oid = forge.asn1.oidToDer(oid);
+    // key as bytes
+    var type,
+        pub,
+        asn1;
+    if (isPrivate) {
+      type = "EC PRIVATE KEY";
+      pub = Buffer.concat([
+        new Buffer([0x00, 0x04]),
+        key.x,
+        key.y
+      ]).toString("binary");
+      key = key.d.toString("binary");
+      asn1 = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
+        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.INTEGER, false, "\u0001"),
+        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OCTETSTRING, false, key),
+        forge.asn1.create(forge.asn1.Class.CONTEXT_SPECIFIC, 0, true, [
+          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, false, oid.bytes())
+        ]),
+        forge.asn1.create(forge.asn1.Class.CONTEXT_SPECIFIC, 1, true, [
+          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.BITSTRING, false, pub)
+        ])
+      ]);
+    } else {
+      type = "PUBLIC KEY";
+      key = Buffer.concat([
+        new Buffer([0x00, 0x04]),
+        key.x,
+        key.y
+      ]).toString("binary");
+      asn1 = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
+        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
+          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, false, forge.asn1.oidToDer(EC_OID).bytes()),
+          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, false, oid.bytes())
+        ]),
+        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.BITSTRING, false, key)
+      ]);
+    }
+    asn1 = forge.asn1.toDer(asn1).bytes();
+    var pem = forge.pem.encode({
+      type: type,
+      body: asn1
+    });
+    return pem;
+  }
+};
+
+// Inspired by digitalbaazar/node-forge/js/rsa.js
+var validators = {
+  oid: EC_OID,
+  privateKey: {
+    // ECPrivateKey
+    name: "ECPrivateKey",
+    tagClass: forge.asn1.Class.UNIVERSAL,
+    type: forge.asn1.Type.SEQUENCE,
+    constructed: true,
+    value: [
+      {
+        // EC version
+        name: "ECPrivateKey.version",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false
+      },
+      {
+        // private value (d)
+        name: "ECPrivateKey.private",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.OCTETSTRING,
+        constructed: false,
+        capture: "d"
+      },
+      {
+        // EC parameters
+        tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
+        name: "ECPrivateKey.parameters",
+        constructed: true,
+        value: [
+          {
+            // namedCurve (crv)
+            name: "ECPrivateKey.namedCurve",
+            tagClass: forge.asn1.Class.UNIVERSAL,
+            type: forge.asn1.Type.OID,
+            constructed: false,
+            capture: "crv"
+          }
+        ]
+      },
+      {
+        // publicKey
+        name: "ECPrivateKey.publicKey",
+        tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
+        constructed: true,
+        value: [
+          {
+            name: "ECPrivateKey.point",
+            tagClass: forge.asn1.Class.UNIVERSAL,
+            type: forge.asn1.Type.BITSTRING,
+            constructed: false,
+            capture: "point"
+          }
+        ]
+      }
+    ]
+  },
+  embeddedPrivateKey: {
+    // ECPrivateKey
+    name: "ECPrivateKey",
+    tagClass: forge.asn1.Class.UNIVERSAL,
+    type: forge.asn1.Type.SEQUENCE,
+    constructed: true,
+    value: [
+      {
+        // EC version
+        name: "ECPrivateKey.version",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false
+      },
+      {
+        // private value (d)
+        name: "ECPrivateKey.private",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.OCTETSTRING,
+        constructed: false,
+        capture: "d"
+      },
+      {
+        // publicKey
+        name: "ECPrivateKey.publicKey",
+        tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
+        constructed: true,
+        value: [
+          {
+            name: "ECPrivateKey.point",
+            tagClass: forge.asn1.Class.UNIVERSAL,
+            type: forge.asn1.Type.BITSTRING,
+            constructed: false,
+            capture: "point"
+          }
+        ]
+      }
+    ]
+  }
+};
+
+var JWKEcFactory = {
+  kty: "EC",
+  validators: validators,
+  prepare: function(props) {
+    // TODO: validate key properties
+    var cfg = JWKEcCfg;
+    var p = Promise.resolve(props);
+    p = p.then(function(json) {
+      return JWK.helpers.thumbprint(cfg, json);
+    });
+    p = p.then(function(hash) {
+      var prints = {};
+      prints[JWK.helpers.INTERNALS.THUMBPRINT_HASH] = hash;
+      props[JWK.helpers.INTERNALS.THUMBPRINT_KEY] = prints;
+      return cfg;
+    });
+    return p;
+  },
+  generate: function(size) {
+    var keypair = depsecc.generateKeyPair(size);
+    var result = {
+      "crv": size,
+      "x": keypair.public.x,
+      "y": keypair.public.y,
+      "d": keypair.private.d
+    };
+    return Promise.resolve(result);
+  },
+  import: function(input) {
+    if (validators.oid !== input.keyOid) {
+      return null;
+    }
+
+    // coerce key params to OID
+    var crv;
+    if (input.keyParams && forge.asn1.Type.OID === input.keyParams.type) {
+      crv = forge.asn1.derToOid(input.keyParams.value);
+      crv = oidToCurveName(crv);
+    } else if (input.crv) {
+      crv = forge.asn1.derToOid(input.crv);
+      crv = oidToCurveName(crv);
+    }
+    if (!crv) {
+      return null;
+    }
+
+    if (!input.parsed) {
+      var capture = {},
+          errors = [];
+      if ("private" === input.type) {
+        // coerce capture.value to DER *iff* private
+        if ("string" === typeof input.keyValue) {
+          input.keyValue = forge.asn1.fromDer(input.keyValue);
+        } else if (Array.isArray(input.keyValue)) {
+          input.keyValue = input.keyValue[0];
+        }
+
+        if (!forge.asn1.validate(input.keyValue,
+                                 validators.embeddedPrivateKey,
+                                 capture,
+                                 errors)) {
+          return null;
+        }
+      } else {
+        capture.point = input.keyValue;
+      }
+      input = capture;
+    }
+
+    // convert factors to Buffers
+    var output = {
+      kty: "EC",
+      crv: crv
+    };
+    if (input.d) {
+      output.d = new Buffer(input.d, "binary");
+    }
+    if (input.point) {
+      var pt = new Buffer(input.point, "binary");
+      // only support uncompressed
+      if (4 !== pt.readUInt16BE(0)) {
+        return null;
+      }
+      pt = pt.slice(2);
+      var len = pt.length / 2;
+      output.x = pt.slice(0, len);
+      output.y = pt.slice(len);
+    }
+    return output;
+  }
+};
+// public API
+module.exports = Object.freeze({
+  config: JWKEcCfg,
+  factory: JWKEcFactory
+});
+
+// registration
+(function(REGISTRY) {
+  REGISTRY.register(JWKEcFactory);
+})(require("./keystore").registry);
+
+}).call(this,require("buffer").Buffer)
+},{"../algorithms/ec-util.js":7,"../deps/ecc":25,"../deps/forge":27,"./basekey.js":34,"./helpers.js":37,"./keystore":39,"buffer":204}],37:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwk/helpers.js - JWK Internal Helper Functions and Constants
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var clone = require("lodash.clone"),
+    util = require("../util"),
+    forge = require("../deps/forge");
+
+var ALGORITHMS = require("../algorithms");
+
+// ### ASN.1 Validators
+// Adapted from digitalbazaar/node-forge/js/asn1.js
+// PrivateKeyInfo
+var privateKeyValidator = {
+  name: "PrivateKeyInfo",
+  tagClass: forge.asn1.Class.UNIVERSAL,
+  type: forge.asn1.Type.SEQUENCE,
+  constructed: true,
+  value: [
+    {
+      // Version (INTEGER)
+      name: "PrivateKeyInfo.version",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.INTEGER,
+      constructed: false,
+      capture: "keyVersion"
+    },
+    {
+      name: "PrivateKeyInfo.privateKeyAlgorithm",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.SEQUENCE,
+      constructed: true,
+      value: [
+        {
+          name: "AlgorithmIdentifier.algorithm",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.OID,
+          constructed: false,
+          capture: "keyOid"
+        },
+        {
+          name: "AlgorithmIdentifier.parameters",
+          captureAsn1: "keyParams"
+        }
+      ]
+    },
+    {
+      name: "PrivateKeyInfo",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.OCTETSTRING,
+      constructed: false,
+      capture: "keyValue"
+    }
+  ]
+};
+// Adapted from digitalbazaar/node-forge/x509.js
+var publicKeyValidator = {
+  name: "SubjectPublicKeyInfo",
+  tagClass: forge.asn1.Class.UNIVERSAL,
+  type: forge.asn1.Type.SEQUENCE,
+  constructed: true,
+  value: [
+    {
+      name: "SubjectPublicKeyInfo.AlgorithmIdentifier",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.SEQUENCE,
+      constructed: true,
+      value: [
+        {
+          name: "AlgorithmIdentifier.algorithm",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.OID,
+          constructed: false,
+          capture: "keyOid"
+        },
+        {
+          name: "AlgorithmIdentifier.parameters",
+          captureAsn1: "keyParams"
+        }
+      ]
+    },
+    {
+      name: "SubjectPublicKeyInfo.subjectPublicKey",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.BITSTRING,
+      constructed: false,
+      capture: "keyValue"
+    }
+  ]
+};
+// Adapted from digitalbazaar/node-forge/x509.js
+var X509CertificateValidator = {
+  name: "Certificate",
+  tagClass: forge.asn1.Class.UNIVERSAL,
+  type: forge.asn1.Type.SEQUENCE,
+  constructed: true,
+  value: [
+    {
+      name: "Certificate.TBSCertificate",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.SEQUENCE,
+      constructed: true,
+      captureAsn1: "certificate",
+      value: [
+        {
+          name: "Certificate.TBSCertificate.version",
+          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
+          type: 0,
+          constructed: true,
+          optional: true,
+          value: [
+            {
+              name: "Certificate.TBSCertificate.version.integer",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.INTEGER,
+              constructed: false,
+              capture: "certVersion"
+            }
+          ]
+        },
+        {
+          name: "Certificate.TBSCertificate.serialNumber",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.INTEGER,
+          constructed: false,
+          capture: "certSerialNumber"
+        },
+        {
+          name: "Certificate.TBSCertificate.signature",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.SEQUENCE,
+          constructed: true,
+          value: [
+            {
+              name: "Certificate.TBSCertificate.signature.algorithm",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.OID,
+              constructed: false,
+              capture: "certSignatureOid"
+            }, {
+              name: "Certificate.TBSCertificate.signature.parameters",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              optional: true,
+              captureAsn1: "certSignatureParams"
+            }
+          ]
+        },
+        {
+          name: "Certificate.TBSCertificate.issuer",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.SEQUENCE,
+          constructed: true,
+          captureAsn1: "certIssuer"
+        },
+        {
+          name: "Certificate.TBSCertificate.validity",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.SEQUENCE,
+          constructed: true,
+          // Note: UTC and generalized times may both appear so the capture
+          // names are based on their detected order, the names used below
+          // are only for the common case, which validity time really means
+          // "notBefore" and which means "notAfter" will be determined by order
+          value: [
+            {
+              // notBefore (Time) (UTC time case)
+              name: "Certificate.TBSCertificate.validity.notBefore (utc)",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.UTCTIME,
+              constructed: false,
+              optional: true,
+              capture: "certValidity1UTCTime"
+            },
+            {
+              // notBefore (Time) (generalized time case)
+              name: "Certificate.TBSCertificate.validity.notBefore (generalized)",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.GENERALIZEDTIME,
+              constructed: false,
+              optional: true,
+              capture: "certValidity2GeneralizedTime"
+            },
+            {
+              // notAfter (Time) (only UTC time is supported)
+              name: "Certificate.TBSCertificate.validity.notAfter (utc)",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.UTCTIME,
+              constructed: false,
+              optional: true,
+              capture: "certValidity3UTCTime"
+            },
+            {
+              // notAfter (Time) (only UTC time is supported)
+              name: "Certificate.TBSCertificate.validity.notAfter (generalized)",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.GENERALIZEDTIME,
+              constructed: false,
+              optional: true,
+              capture: "certValidity4GeneralizedTime"
+            }
+          ]
+        }, {
+          // Name (subject) (RDNSequence)
+          name: "Certificate.TBSCertificate.subject",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.SEQUENCE,
+          constructed: true,
+          captureAsn1: "certSubject"
+        },
+        // SubjectPublicKeyInfo
+        publicKeyValidator,
+        {
+          // issuerUniqueID (optional)
+          name: "Certificate.TBSCertificate.issuerUniqueID",
+          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
+          type: 1,
+          constructed: true,
+          optional: true,
+          value: [
+            {
+              name: "Certificate.TBSCertificate.issuerUniqueID.id",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.BITSTRING,
+              constructed: false,
+              capture: "certIssuerUniqueId"
+            }
+          ]
+        },
+        {
+          // subjectUniqueID (optional)
+          name: "Certificate.TBSCertificate.subjectUniqueID",
+          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
+          type: 2,
+          constructed: true,
+          optional: true,
+          value: [
+            {
+              name: "Certificate.TBSCertificate.subjectUniqueID.id",
+              tagClass: forge.asn1.Class.UNIVERSAL,
+              type: forge.asn1.Type.BITSTRING,
+              constructed: false,
+              capture: "certSubjectUniqueId"
+            }
+          ]
+        },
+        {
+          // Extensions (optional)
+          name: "Certificate.TBSCertificate.extensions",
+          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
+          type: 3,
+          constructed: true,
+          captureAsn1: "certExtensions",
+          optional: true
+        }
+      ]
+    },
+    {
+      // AlgorithmIdentifier (signature algorithm)
+      name: "Certificate.signatureAlgorithm",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.SEQUENCE,
+      constructed: true,
+      value: [
+        {
+          // algorithm
+          name: "Certificate.signatureAlgorithm.algorithm",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          type: forge.asn1.Type.OID,
+          constructed: false,
+          capture: "certSignatureOid"
+        },
+        {
+          name: "Certificate.TBSCertificate.signature.parameters",
+          tagClass: forge.asn1.Class.UNIVERSAL,
+          optional: true,
+          captureAsn1: "certSignatureParams"
+        }
+      ]
+    },
+    {
+      // SignatureValue
+      name: "Certificate.signatureValue",
+      tagClass: forge.asn1.Class.UNIVERSAL,
+      type: forge.asn1.Type.BITSTRING,
+      constructed: false,
+      capture: "certSignature"
+    }
+  ]
+};
+
+var INTERNALS = {
+  THUMBPRINT_KEY: "internal\u0000thumbprint",
+  THUMBPRINT_HASH: "SHA-256"
+};
+
+module.exports = {
+  validators: {
+    privateKey: privateKeyValidator,
+    publicKey: publicKeyValidator,
+    certificate: X509CertificateValidator
+  },
+
+  thumbprint: function(cfg, json, hash) {
+    if ("function" !== typeof cfg.thumbprint) {
+      return Promise.reject(new Error("thumbprint not supported"));
+    }
+
+    hash = (hash || INTERNALS.THUMBPRINT_HASH).toUpperCase();
+    var fields = cfg.thumbprint(json);
+    var input = Object.keys(fields).
+                sort().
+                map(function(k) {
+      var v = fields[k];
+      if (Buffer.isBuffer(v)) {
+        v = util.base64url.encode(v);
+      }
+      return JSON.stringify(k) + ":" + JSON.stringify(v);
+    });
+    input = "{" + input.join(",") + "}";
+    try {
+      return ALGORITHMS.digest(hash, new Buffer(input, "utf8"));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  },
+  unpackProps: function(props, allowed) {
+    var output;
+
+    // apply all of the existing values
+    allowed.forEach(function(cfg) {
+      if (!(cfg.name in props)) {
+        return;
+      }
+      output = output || {};
+      var value = props[cfg.name];
+      switch (cfg.type) {
+        case "binary":
+          if (Buffer.isBuffer(value)) {
+            value = value;
+            props[cfg.name] = util.base64url.encode(value);
+          } else {
+            value = util.base64url.decode(value);
+          }
+          break;
+        case "string":
+        case "number":
+        case "boolean":
+          value = value;
+          break;
+        case "array":
+          value = [].concat(value);
+          break;
+        case "object":
+          value = clone(value);
+          break;
+        default:
+          // TODO: deep clone?
+          value = value;
+          break;
+      }
+      output[cfg.name] = value;
+    });
+
+    // remove any from json that didn't apply
+    var check = output || {};
+    Object.keys(props).
+           forEach(function(n) {
+              if (n in check) { return; }
+              delete props[n];
+           });
+
+    return output;
+  },
+  COMMON_PROPS: [
+    {name: "kty", type: "string"},
+    {name: "kid", type: "string"},
+    {name: "use", type: "string"},
+    {name: "alg", type: "string"},
+    {name: "x5c", type: "array"},
+    {name: "x5t", type: "binary"},
+    {name: "x5u", type: "string"},
+    {name: "key_ops", type: "array"}
+  ],
+  INTERNALS: INTERNALS
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../algorithms":13,"../deps/forge":27,"../util":52,"buffer":204,"lodash.clone":68}],38:[function(require,module,exports){
+/*!
+ * jwk/index.js - JSON Web Key (JWK) Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var JWKStore = require("./keystore.js");
+
+// Public API -- Key and KeyStore methods
+Object.keys(JWKStore.KeyStore).forEach(function(name) {
+  exports[name] = JWKStore.KeyStore[name];
+});
+
+// Public API -- constants
+var CONSTANTS = require("./constants.js");
+Object.keys(CONSTANTS).forEach(function(name) {
+  exports[name] = CONSTANTS[name];
+});
+
+// Registered Key Types
+require("./octkey.js");
+require("./rsakey.js");
+require("./eckey.js");
+
+},{"./constants.js":35,"./eckey.js":36,"./keystore.js":39,"./octkey.js":40,"./rsakey.js":41}],39:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwk/keystore.js - JWK KeyStore Implementation
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var clone = require("lodash.clone"),
+    merge = require("../util/merge"),
+    forge = require("../deps/forge"),
+    util = require("../util");
+
+var JWK = {
+  BaseKey: require("./basekey.js"),
+  helpers: require("./helpers.js")
+};
+
+/**
+ * @class JWK.KeyStoreRegistry
+ * @classdesc
+ * A registry of JWK.Key types that can be used.
+ *
+ * @description
+ * **NOTE:** This constructor cannot be called directly. Instead use the
+ * global {JWK.registry}
+ */
+var JWKRegistry = function() {
+  var types = {};
+
+  Object.defineProperty(this, "register", {
+    value: function(factory) {
+      if (!factory || "string" !== typeof factory.kty || !factory.kty) {
+        throw new Error("invalid Key factory");
+      }
+
+      var kty = factory.kty;
+      types[kty] = factory;
+      return this;
+    }
+  });
+  Object.defineProperty(this, "unregister", {
+    value: function(factory) {
+      if (!factory || "string" !== typeof factory.kty || !factory.kty) {
+        throw new Error("invalid Key factory");
+      }
+
+      var kty = factory.kty;
+      if (factory === types[kty]) {
+        delete types[kty];
+      }
+      return this;
+    }
+  });
+
+  Object.defineProperty(this, "get", {
+    value: function(kty) {
+      return types[kty || ""] || undefined;
+    }
+  });
+  Object.defineProperty(this, "all", {
+    value: function() {
+      return Object.keys(types).map(function(t) { return types[t]; });
+    }
+  });
+};
+
+// Globals
+var GLOBAL_REGISTRY = new JWKRegistry();
+
+// importer
+function processCert(input) {
+  // convert certIssuer to readable attributes
+  ["certIssuer", "certSubject"].forEach(function(field) {
+    /* eslint new-cap: [0] */
+    var attrs = forge.pki.RDNAttributesAsArray(input[field]);
+    var result = input[field] = {};
+    attrs.forEach(function(a) {
+      result[a.name || a.type] = a.value;
+    });
+  });
+
+  return input;
+}
+
+function fromPEM(input) {
+  var result = {};
+  var pems = forge.pem.decode(input);
+  var found = pems.some(function(p) {
+    switch (p.type) {
+      case "CERTIFICATE":
+        result.form = "pkix";
+        break;
+      case "PUBLIC KEY":
+        result.form = "spki";
+        break;
+      case "PRIVATE KEY":
+        result.form = "pkcs8";
+        break;
+      case "EC PRIVATE KEY":
+        /* eslint no-fallthrough: [0] */
+      case "RSA PRIVATE KEY":
+        result.form = "private";
+        break;
+      default:
+        return false;
+    }
+
+    result.body = p.body;
+    return true;
+  });
+  if (!found) {
+    throw new Error("supported PEM type not found");
+  }
+  return result;
+}
+function importFrom(registry, input) {
+  // form can be one of:
+  //  'private' | 'pkcs8' | 'public' | 'spki' | 'pkix' | 'x509'
+  var capture = {},
+      errors = [],
+      result;
+
+  // conver from DER to ASN1
+  var form = input.form,
+      der = input.body,
+      thumbprint = null;
+  input = forge.asn1.fromDer(der);
+  switch(form) {
+    case "private":
+      registry.all().some(function(factory) {
+        if (result) {
+          return false;
+        }
+        if (!factory.validators) {
+          return false;
+        }
+
+        var oid = factory.validators.oid,
+            validator = factory.validators.privateKey;
+        if (!validator) {
+          return false;
+        }
+        capture = {};
+        errors = [];
+        result = forge.asn1.validate(input, validator, capture, errors);
+        if (result) {
+          capture.keyOid = forge.asn1.oidToDer(oid);
+          capture.parsed = true;
+        }
+        return result;
+      });
+      capture.type = "private";
+      break;
+    case "pkcs8":
+      result = forge.asn1.validate(input, JWK.helpers.validators.privateKey, capture, errors);
+      capture.type = "private";
+      break;
+    case "public":
+      // eslint no-fallthrough: [0] */
+    case "spki":
+      result = forge.asn1.validate(input, JWK.helpers.validators.publicKey, capture, errors);
+      capture.type = "public";
+      break;
+    case "pkix":
+      /* eslint no-fallthrough: [0] */
+    case "x509":
+      result = forge.asn1.validate(input, JWK.helpers.validators.certificate, capture, errors);
+      if (result) {
+        capture = processCert(capture);
+        var md = forge.md.sha1.create();
+        md.update(der);
+        thumbprint = util.base64url.encode(new Buffer(md.digest().toHex(), "hex"));
+      }
+      capture.type = "public";
+      break;
+  }
+  if (!result) {
+    return null;
+  }
+
+  // convert oids
+  if (capture.keyOid) {
+    capture.keyOid = forge.asn1.derToOid(capture.keyOid);
+  }
+
+  // find and invoke the importer
+  result = null;
+  GLOBAL_REGISTRY.all().forEach(function(factory) {
+    if (result) {
+      return;
+    }
+    if (!factory) {
+      return;
+    }
+    if ("function" !== typeof factory.import) {
+      return;
+    }
+    result = factory.import(capture);
+  });
+  if (result && capture.certSubject && capture.certSubject.commonName) {
+    result.kid = capture.certSubject.commonName;
+  }
+  if (result && thumbprint) {
+    result.x5t = thumbprint;
+  }
+  return result;
+}
+
+/**
+ * @class JWK.KeyStore
+ * @classdesc
+ * Represents a collection of Keys.
+ *
+ * @description
+ * **NOTE:** This constructor cannot be called directly. Instead call {@link
+ * JWK.createKeyStore}.
+ */
+var JWKStore = function(registry, parent) {
+  var keysets = {};
+
+  /**
+   * @method JWK.KeyStore#generate
+   * @description
+   * Generates a new random Key into this KeyStore.
+   *
+   * The type of {size} depends on the value of {kty}:
+   *
+   * + **`EC`**: String naming the curve to use, which can be one of:
+   *   `"P-256"`, `"P-384"`, or `"P-521"` (default is **`"P-256"`**).
+   * + **`RSA`**: Number describing the size of the key, in bits (default is
+   *   **`2048`**).
+   * + **`oct`**: Number describing the size of the key, in bits (default is
+   *   **`256`**).
+   *
+   * Any properties in {props} are applied before the key is generated,
+   * and are expected to be data types acceptable in JSON.  This allows the
+   * generated key to have a specific key identifier, or to specify its
+   * acceptable usage.
+   *
+   * The returned Promise, when fulfilled, returns the generated Key.
+   *
+   * @param {String} kty The type of generated key
+   * @param {String|Number} [size] The size of the generated key
+   * @param {Object} [props] Additional properties to apply to the generated
+   *        key.
+   * @returns {Promise} The promise for the generated Key
+   * @throws {Error} If {kty} is not supported
+   */
+  Object.defineProperty(this, "generate", {
+    value: function(kty, size, props) {
+      var keytype = registry.get(kty);
+      if (!keytype) {
+        return Promise.reject(new Error("unsupported key type"));
+      }
+
+      props = clone(props || {});
+      props.kty = kty;
+
+      var self = this,
+          promise = keytype.generate(size);
+      return promise.then(function(jwk) {
+        jwk = merge(props, jwk, {
+          kty: kty
+        });
+        return self.add(jwk);
+      });
+    }
+  });
+  /**
+   * @method JWK.KeyStore#add
+   * @description
+   * Adds a Key to this KeyStore. If {jwk} is a string, it is first
+   * parsed into a plain JSON object. If {jwk} is already an instance
+   * of JWK.Key, its (public) JSON representation is first obtained
+   * then applied to a new JWK.Key object within this KeyStore.
+   *
+   * @param {String|Object} jwk The JSON Web Key (JWK)
+   * @param {String} [form] The format of a String key to expect
+   * @param {Object} [extras] extra jwk fields inserted when importing from a non json string (eg "pem")
+   * @returns {Promise} The promise for the added key
+   */
+  Object.defineProperty(this, "add", {
+    value: function(jwk, form, extras) {
+      extras = extras || {};
+
+      var factors;
+      if (Buffer.isBuffer(jwk) || typeof jwk === "string") {
+        // form can be 'json', 'pkcs8', 'spki', 'pkix', 'x509', 'pem'
+        form = (form || "json").toLowerCase();
+        if ("json" === form) {
+          jwk = JSON.parse(jwk.toString("utf8"));
+        } else {
+          try {
+            if ("pem" === form) {
+              // convert *first* PEM -> DER
+              factors = fromPEM(jwk);
+            } else {
+              factors = {
+                body: jwk.toString("binary"),
+                form: form
+              };
+            }
+            jwk = importFrom(registry, factors);
+            if (!jwk) {
+              throw new Error("no importer for key");
+            }
+            Object.keys(extras).forEach(function(field){
+              jwk[field] = extras[field];
+            });
+          } catch (err) {
+            return Promise.reject(err);
+          }
+        }
+      } else if (JWKStore.isKey(jwk)) {
+        // assume a complete duplicate is desired
+        jwk = jwk.toJSON(true);
+      }
+
+      var keytype = registry.get(jwk.kty);
+      if (!keytype) {
+        return Promise.reject(new Error("unsupported key type"));
+      }
+
+      var self = this,
+          promise = keytype.prepare(jwk);
+      return promise.then(function(cfg) {
+        return new JWK.BaseKey(jwk.kty, self, jwk, cfg);
+      }).then(function(jwk) {
+        var kid = jwk.kid || "";
+        var keys = keysets[kid] = keysets[kid] || [];
+        keys.push(jwk);
+
+        return jwk;
+      });
+    }
+  });
+  /**
+   * @method JWK.KeyStore#remove
+   * @description
+   * Removes a Key from this KeyStore.
+   *
+   * **NOTE:** The removed Key's {keystore} property is not changed.
+   *
+   * @param {JWK.Key} jwk The key to remove.
+   */
+  Object.defineProperty(this, "remove", {
+    value: function(jwk) {
+      if (!jwk) {
+        return;
+      }
+
+      var keys = keysets[jwk.kid];
+      if (!keys) {
+        return;
+      }
+
+      var pos = keys.indexOf(jwk);
+      if (pos === -1) {
+        return;
+      }
+
+      keys.splice(pos, 1);
+      if (!keys.length) {
+        delete keysets[jwk.kid];
+      }
+    }
+  });
+
+  /**
+   * @method JWK.KeyStore#all
+   * @description
+   * Retrieves all of the contained Keys that optinally match all of the
+   * given properties.
+   *
+   * If {props} are specified, this method only returns Keys which exactly
+   * match the given properties. The properties can be any of the
+   * following:
+   *
+   * + **alg**: The algorithm for the Key.
+   * + **use**: The usage for the Key.
+   * + **kid**: The identifier for the Key.
+   *
+   * If no properties are given, this method returns all of the Keys for this
+   * KeyStore.
+   *
+   * @param {Object} [props] The properties to match against
+   * @param {Boolean} [local = false] `true` if only the Keys
+   *        directly contained by this KeyStore should be returned, or
+   *        `false` if it should return all Keys of this KeyStore and
+   *        its ancestors.
+   * @returns {JWK.Key[]} The list of matching Keys, or an empty array if no
+   *          matches are found.
+   */
+  Object.defineProperty(this, "all", {
+    value: function(props, local) {
+      props = props || {};
+
+      var candidates = [];
+      var matches = function(key) {
+        // match on 'kty'
+        if (props.kty &&
+            key.kty &&
+            props.kty !== key.kty) {
+          return false;
+        }
+        // match on 'use'
+        if (props.use &&
+            key.use &&
+            props.use !== key.use) {
+          return false;
+        }
+        // match on 'alg'
+        if (props.alg) {
+          if (props.alg !== "dir" &&
+              key.alg &&
+              props.alg !== key.alg) {
+            return false;
+          }
+          return key.supports(props.alg);
+        }
+        //TODO: match on 'key_ops'
+
+        return true;
+      };
+      Object.keys(keysets).forEach(function(id) {
+        if (props.kid && props.kid !== id) {
+          return;
+        }
+
+        var keys = keysets[id].filter(matches);
+        if (keys.length) {
+          candidates = candidates.concat(keys);
+        }
+      });
+
+      if (!local && parent) {
+        candidates = candidates.concat(parent.all(props));
+      }
+
+      return candidates;
+    }
+  });
+  /**
+   * @method JWK.KeyStore#get
+   * @description
+   * Retrieves the contained Key matching the given {kid}, and optionally
+   * all of the given properties.  This method equivalent to calling
+   * {@link JWK.Store#all}, then returning the first Key whose
+   * "kid" is {kid}. If {kid} is undefined, then the first Key that
+   * is returned from `all()` is returned.
+   *
+   * @param {String} [kid] The key identifier to match against.
+   * @param {Object} [props] The properties to match against.
+   * @param {Boolean} [local = false] `true` if only the Keys
+   *        directly contained by this KeyStore should be returned, or
+   *        `false` if it should return all Keys of this KeyStore and
+   *        its ancestors.
+   * @returns {JWK.Key} The Key matching {kid} and {props}, or `null`
+   *          if no match is found.
+   */
+  Object.defineProperty(this, "get", {
+    value: function(kid, props, local) {
+      // reconcile arguments
+      if (typeof kid === "boolean") {
+        local = kid;
+        props = kid = null;
+      } else if (typeof kid === "object") {
+        local = props;
+        props = kid;
+        kid = null;
+      }
+
+      // fixup props
+      props = props || {};
+      if (kid) {
+        props.kid = kid;
+      }
+
+      var candidates = this.all(props, true);
+      if (!candidates.length && parent && !local) {
+        candidates = parent.get(props, local);
+      }
+      return candidates[0] || null;
+    }
+  });
+
+  /**
+   * @method JWK.KeyStore#temp
+   * @description
+   * Creates a temporary KeyStore based on this KeyStore.
+   *
+   * @returns {JWK.KeyStore} The temporary KeyStore.
+   */
+  Object.defineProperty(this, "temp", {
+    value: function() {
+      return new JWKStore(registry, this);
+    }
+  });
+
+  /**
+   * @method JWK.KeyStore#toJSON
+   * @description
+   * Generates a JSON representation of this KeyStore, which conforms
+   * to a JWK Set from {I-D.ietf-jose-json-web-key}.
+   *
+   * @param {Boolean} [isPrivate = false] `true` if the private fields
+   *        of stored keys are to be included.
+   * @returns {Object} The JSON representation of this KeyStore.
+   */
+  Object.defineProperty(this, "toJSON", {
+    value: function(isPrivate) {
+      var keys = [];
+
+      Object.keys(keysets).forEach(function(kid) {
+        var items = keysets[kid].map(function(k) {
+          return k.toJSON(isPrivate);
+        });
+        keys = keys.concat(items);
+      });
+
+      return {
+        keys: keys
+      };
+    }
+  });
+};
+
+/**
+ * Determines if the given object is an instance of JWK.KeyStore.
+ *
+ * @param {Object} obj The object to test
+ * @returns {Boolean} `true` if {obj} is an instance of JWK.KeyStore,
+ *          and `false` otherwise.
+ */
+JWKStore.isKeyStore = function(obj) {
+  if (!obj) {
+    return false;
+  }
+
+  if ("object" !== typeof obj) {
+    return false;
+  }
+
+  if ("function" !== typeof obj.get ||
+      "function" !== typeof obj.all ||
+      "function" !== typeof obj.generate ||
+      "function" !== typeof obj.add ||
+      "function" !== typeof obj.remove) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Creates a new empty KeyStore.
+ *
+ * @returns {JWK.KeyStore} The empty KeyStore.
+ */
+JWKStore.createKeyStore = function() {
+  return new JWKStore(GLOBAL_REGISTRY);
+};
+
+/**
+ * Coerces the given object into a KeyStore. This method uses the following
+ * algorithm to coerce {ks}:
+ *
+ * 1. if {ks} is an instance of JWK.KeyStore, it is returned directly
+ * 2. if {ks} is a string, it is parsed into a JSON value
+ * 3. if {ks} is an array, it creates a new JWK.KeyStore and calls {@link
+ *    JWK.KeyStore#add} for each element in the {ks} array.
+ * 4. if {ks} is a JSON object, it creates a new JWK.KeyStore and calls {@link
+ *    JWK.KeyStore#add} for each element in the "keys" property.
+ *
+ * @param {Object|String} ks The value to coerce into a
+ *        KeyStore
+ * @returns {Promise(JWK.KeyStore)} A promise for the coerced KeyStore.
+ */
+JWKStore.asKeyStore = function(ks) {
+  if (JWKStore.isKeyStore(ks)) {
+    return Promise.resolve(ks);
+  }
+
+  var store = JWKStore.createKeyStore(),
+      keys;
+
+  if (typeof ks === "string") {
+    ks = JSON.parse(ks);
+  }
+
+  if (Array.isArray(ks)) {
+    keys = ks;
+  } else if ("keys" in ks) {
+    keys = ks.keys;
+  } else {
+    return Promise.reject(new Error("invalid keystore"));
+  }
+
+  keys = keys.map(function(k) {
+    return store.add(k);
+  });
+
+  var promise = Promise.all(keys);
+  promise = promise.then(function() {
+    return store;
+  });
+
+  return promise;
+};
+
+
+/**
+ * Determines if the given object is a JWK.Key instance.
+ *
+ * @param {Object} obj The object to test
+ * @returns `true` if {obj} is a JWK.Key
+ */
+JWKStore.isKey = function(obj) {
+  if (!obj) {
+    return false;
+  }
+
+  if ("object" !== typeof obj) {
+    return false;
+  }
+
+  if (!JWKStore.isKeyStore(obj.keystore)) {
+    return false;
+  }
+
+  if ("string" !== typeof obj.kty ||
+      "number" !== typeof obj.length ||
+      "function" !== typeof obj.algorithms ||
+      "function" !== typeof obj.supports ||
+      "function" !== typeof obj.encrypt ||
+      "function" !== typeof obj.decrypt ||
+      "function" !== typeof obj.wrap ||
+      "function" !== typeof obj.unwrap ||
+      "function" !== typeof obj.sign ||
+      "function" !== typeof obj.verify) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Coerces the given object into a Key. If {key} is an instance of JWK.Key,
+ * it is returned directly. Otherwise, this method first creates a new
+ * JWK.KeyStore and calls {@link JWK.KeyStore#add} on this new KeyStore.
+ *
+ * @param {Object|String} key The value to coerce into a Key
+ * @param {String} [form] The format of a String Key to expect
+ * @param {Object} [extras] extra jwk fields inserted when importing from a non json string (eg "pem")
+ * @returns {Promise(JWK.Key)} A promise for the coerced Key.
+ */
+JWKStore.asKey = function(key, form, extras) {
+  if (JWKStore.isKey(key)) {
+    return Promise.resolve(key);
+  }
+
+  var ks = JWKStore.createKeyStore();
+  key = ks.add(key, form, extras);
+
+  return key;
+};
+
+module.exports = {
+  KeyRegistry: JWKRegistry,
+  KeyStore: JWKStore,
+  registry: GLOBAL_REGISTRY
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge":27,"../util":52,"../util/merge":53,"./basekey.js":34,"./helpers.js":37,"buffer":204,"lodash.clone":68}],40:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwk/octkey.js - Symmetric Octet Key Representation
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var util = require("../util");
+
+var JWK = {
+  BaseKey: require("./basekey.js"),
+  helpers: require("./helpers.js")
+};
+
+var SIG_ALGS = [
+  "HS256",
+  "HS384",
+  "HS512"
+];
+var ENC_ALGS = [
+  "A128GCM",
+  "A192GCM",
+  "A256GCM",
+  "A128CBC-HS256",
+  "A192CBC-HS384",
+  "A256CBC-HS512",
+  "A128CBC+HS256",
+  "A192CBC+HS384",
+  "A256CBC+HS512"
+];
+var WRAP_ALGS = [
+  "A128KW",
+  "A192KW",
+  "A256KW",
+  "A128GCMKW",
+  "A192GCMKW",
+  "A256GCMKW",
+  "PBES2-HS256+A128KW",
+  "PBES2-HS384+A192KW",
+  "PBES2-HS512+A256KW",
+  "dir"
+];
+
+function adjustDecryptProps(alg, props) {
+  if ("iv" in props) {
+    props.iv = Buffer.isBuffer(props.iv) ?
+               props.iv :
+               util.base64url.decode(props.iv || "");
+  }
+  if ("adata" in props) {
+    props.adata = Buffer.isBuffer(props.adata) ?
+                  props.adata :
+                  new Buffer(props.adata || "", "utf8");
+  }
+  if ("mac" in props) {
+    props.mac = Buffer.isBuffer(props.mac) ?
+                props.mac :
+                util.base64url.decode(props.mac || "");
+  }
+  if ("tag" in props) {
+    props.tag = Buffer.isBuffer(props.tag) ?
+                props.tag :
+                util.base64url.decode(props.tag || "");
+  }
+
+  return props;
+}
+function adjustEncryptProps(alg, props) {
+  if ("iv" in props) {
+    props.iv = Buffer.isBuffer(props.iv) ?
+               props.iv :
+               util.base64url.decode(props.iv || "");
+  }
+  if ("adata" in props) {
+    props.adata = Buffer.isBuffer(props.adata) ?
+                  props.adata :
+                  new Buffer(props.adata || "", "utf8");
+  }
+
+  return props;
+}
+
+var JWKOctetCfg = {
+  publicKey: function(props) {
+    var fields = JWK.helpers.COMMON_PROPS.concat([
+    ]);
+
+    var pk;
+    pk = JWK.helpers.unpackProps(props, fields);
+
+    return pk;
+  },
+  privateKey: function(props) {
+    var fields = JWK.helpers.COMMON_PROPS.concat([
+      {name: "k", type: "binary"}
+    ]);
+
+    var pk;
+    pk = JWK.helpers.unpackProps(props, fields);
+    if (pk && pk.k) {
+      pk.length = pk.k.length * 8;
+    } else {
+      pk = undefined;
+    }
+
+    return pk;
+  },
+
+  thumbprint: function(json) {
+    if (json.private) {
+      json = json.private;
+    }
+    var fields;
+    fields = {
+      k: json.k || "",
+      kty: "oct"
+    };
+    return fields;
+  },
+  algorithms: function(keys, mode) {
+    var len = keys.private && (keys.private.k.length * 8);
+    var mins = [256, 384, 512];
+
+    if (!len) {
+      return [];
+    }
+    switch (mode) {
+      case "encrypt":
+      case "decrypt":
+        return ENC_ALGS.filter(function(a) {
+          return (a === ("A" + (len / 2) + "CBC-HS" + len)) ||
+                 (a === ("A" + (len / 2) + "CBC+HS" + len)) ||
+                 (a === ("A" + len + "GCM"));
+        });
+      case "sign":
+      case "verify":
+        // TODO: allow for HS{less-than-keysize}
+        return SIG_ALGS.filter(function(a) {
+          var result = false;
+          mins.forEach(function(m) {
+            if (m > len) { return; }
+            result = result | (a === ("HS" + m));
+          });
+          return result;
+        });
+      case "wrap":
+      case "unwrap":
+        return WRAP_ALGS.filter(function(a) {
+          return (a === ("A" + len + "KW")) ||
+                 (a === ("A" + len + "GCMKW")) ||
+                 (a.indexOf("PBES2-") === 0) ||
+                 (a === "dir");
+        });
+    }
+
+    return [];
+  },
+  encryptKey: function(alg, keys) {
+    return keys.private && keys.private.k;
+  },
+  encryptProps: adjustEncryptProps,
+
+  decryptKey: function(alg, keys) {
+    return keys.private && keys.private.k;
+  },
+  decryptProps: adjustDecryptProps,
+
+  wrapKey: function(alg, keys) {
+    return keys.private && keys.private.k;
+  },
+  wrapProps: adjustEncryptProps,
+
+  unwrapKey: function(alg, keys) {
+    return keys.private && keys.private.k;
+  },
+  unwrapProps: adjustDecryptProps,
+
+  signKey: function(alg, keys) {
+    return keys.private && keys.private.k;
+  },
+  verifyKey: function(alg, keys) {
+    return keys.private && keys.private.k;
+  }
+};
+
+// Factory
+var JWKOctetFactory = {
+  kty: "oct",
+  prepare: function(props) {
+    // TODO: validate key properties
+    var cfg = JWKOctetCfg;
+    var p = Promise.resolve(props);
+    p = p.then(function(json) {
+      return JWK.helpers.thumbprint(cfg, json);
+    });
+    p = p.then(function(hash) {
+      var prints = {};
+      prints[JWK.helpers.INTERNALS.THUMBPRINT_HASH] = hash;
+      props[JWK.helpers.INTERNALS.THUMBPRINT_KEY] = prints;
+      return cfg;
+    });
+    return p;
+  },
+  generate: function(size) {
+    // TODO: validate key sizes
+    var key = util.randomBytes(size / 8);
+
+    return Promise.resolve({
+      k: key
+    });
+  }
+};
+
+// public API
+module.exports = Object.freeze({
+  config: JWKOctetCfg,
+  factory: JWKOctetFactory
+});
+
+// registration
+(function(REGISTRY) {
+  REGISTRY.register(JWKOctetFactory);
+})(require("./keystore").registry);
+
+}).call(this,require("buffer").Buffer)
+},{"../util":52,"./basekey.js":34,"./helpers.js":37,"./keystore":39,"buffer":204}],41:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jwk/rsa.js - RSA Key Representation
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../deps/forge.js"),
+    rsau = require("../algorithms/rsa-util");
+
+var JWK = {
+  BaseKey: require("./basekey.js"),
+  helpers: require("./helpers.js")
+};
+
+var SIG_ALGS = [
+  "RS256",
+  "RS384",
+  "RS512",
+  "PS256",
+  "PS384",
+  "PS512"
+];
+var WRAP_ALGS = [
+  "RSA-OAEP",
+  "RSA-OAEP-256",
+  "RSA1_5"
+];
+
+var JWKRsaCfg = {
+  publicKey: function(props) {
+    var fields = JWK.helpers.COMMON_PROPS.concat([
+      {name: "n", type: "binary"},
+      {name: "e", type: "binary"}
+    ]);
+    var pk;
+    pk = JWK.helpers.unpackProps(props, fields);
+    if (pk && pk.n && pk.e) {
+      pk.length = pk.n.length * 8;
+    } else {
+      delete pk.e;
+      delete pk.n;
+    }
+
+    return pk;
+  },
+  privateKey: function(props) {
+    var fields = JWK.helpers.COMMON_PROPS.concat([
+      {name: "n", type: "binary"},
+      {name: "e", type: "binary"},
+      {name: "d", type: "binary"},
+      {name: "p", type: "binary"},
+      {name: "q", type: "binary"},
+      {name: "dp", type: "binary"},
+      {name: "dq", type: "binary"},
+      {name: "qi", type: "binary"}
+    ]);
+
+    var pk;
+    pk = JWK.helpers.unpackProps(props, fields);
+    if (pk && pk.d && pk.n && pk.e && pk.p && pk.q && pk.dp && pk.dq && pk.qi) {
+      pk.length = pk.d.length * 8;
+    } else {
+      pk = undefined;
+    }
+
+    return pk;
+  },
+  thumbprint: function(json) {
+    if (json.public) {
+      json = json.public;
+    }
+    var fields = {
+      e: json.e,
+      kty: "RSA",
+      n: json.n
+    };
+    return fields;
+  },
+  algorithms: function(keys, mode) {
+    switch (mode) {
+    case "encrypt":
+    case "decrypt":
+      return [];
+    case "wrap":
+      return (keys.public && WRAP_ALGS.slice()) || [];
+    case "unwrap":
+      return (keys.private && WRAP_ALGS.slice()) || [];
+    case "sign":
+      return (keys.private && SIG_ALGS.slice()) || [];
+    case "verify":
+      return (keys.public && SIG_ALGS.slice()) || [];
+    }
+
+    return [];
+  },
+
+  wrapKey: function(alg, keys) {
+    return keys.public;
+  },
+  unwrapKey: function(alg, keys) {
+    return keys.private;
+  },
+
+  signKey: function(alg, keys) {
+    return keys.private;
+  },
+  verifyKey: function(alg, keys) {
+    return keys.public;
+  },
+
+  convertToPEM: function(key, isPrivate) {
+    var k = rsau.convertToForge(key, !isPrivate);
+    if (!isPrivate) {
+      return forge.pki.publicKeyToPem(k);
+    }
+    return forge.pki.privateKeyToPem(k);
+  }
+};
+
+function convertBNtoBuffer(bn) {
+  bn = bn.toString(16);
+  if (bn.length % 2) {
+    bn = "0" + bn;
+  }
+  return new Buffer(bn, "hex");
+}
+
+// Adapted from digitalbaazar/node-forge/js/rsa.js
+var validators = {
+  oid: "1.2.840.113549.1.1.1",
+  privateKey: {
+    name: "RSAPrivateKey",
+    tagClass: forge.asn1.Class.UNIVERSAL,
+    type: forge.asn1.Type.SEQUENCE,
+    constructed: true,
+    value: [
+      {
+        // Version (INTEGER)
+        name: "RSAPrivateKey.version",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "version"
+      },
+      {
+        // modulus (n)
+        name: "RSAPrivateKey.modulus",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "n"
+      },
+      {
+        // publicExponent (e)
+        name: "RSAPrivateKey.publicExponent",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "e"
+      },
+      {
+        // privateExponent (d)
+        name: "RSAPrivateKey.privateExponent",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "d"
+      },
+      {
+        // prime1 (p)
+        name: "RSAPrivateKey.prime1",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "p"
+      },
+      {
+        // prime2 (q)
+        name: "RSAPrivateKey.prime2",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "q"
+      },
+      {
+        // exponent1 (d mod (p-1))
+        name: "RSAPrivateKey.exponent1",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "dp"
+      },
+      {
+        // exponent2 (d mod (q-1))
+        name: "RSAPrivateKey.exponent2",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "dq"
+      },
+      {
+        // coefficient ((inverse of q) mod p)
+        name: "RSAPrivateKey.coefficient",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "qi"
+      }
+    ]
+  },
+  publicKey: {
+    // RSAPublicKey
+    name: "RSAPublicKey",
+    tagClass: forge.asn1.Class.UNIVERSAL,
+    type: forge.asn1.Type.SEQUENCE,
+    constructed: true,
+    value: [
+      {
+        // modulus (n)
+        name: "RSAPublicKey.modulus",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "n"
+      },
+      {
+        // publicExponent (e)
+        name: "RSAPublicKey.exponent",
+        tagClass: forge.asn1.Class.UNIVERSAL,
+        type: forge.asn1.Type.INTEGER,
+        constructed: false,
+        capture: "e"
+      }
+    ]
+  }
+};
+
+// Factory
+var JWKRsaFactory = {
+  kty: "RSA",
+  validators: validators,
+  prepare: function(props) {
+    // TODO: validate key properties
+    var cfg = JWKRsaCfg;
+    var p = Promise.resolve(props);
+    p = p.then(function(json) {
+      return JWK.helpers.thumbprint(cfg, json);
+    });
+    p = p.then(function(hash) {
+      var prints = {};
+      prints[JWK.helpers.INTERNALS.THUMBPRINT_HASH] = hash;
+      props[JWK.helpers.INTERNALS.THUMBPRINT_KEY] = prints;
+      return cfg;
+    });
+    return p;
+  },
+  generate: function(size) {
+    // TODO: validate key sizes
+    var key = forge.pki.rsa.generateKeyPair({
+      bits: size,
+      e: 0x010001
+    });
+    key = key.privateKey;
+
+    // convert to JSON-ish
+    var result = {};
+    [
+      "e",
+      "n",
+      "d",
+      "p",
+      "q",
+      {incoming: "dP", outgoing: "dp"},
+      {incoming: "dQ", outgoing: "dq"},
+      {incoming: "qInv", outgoing: "qi"}
+    ].forEach(function(f) {
+      var incoming,
+          outgoing;
+
+      if ("string" === typeof f) {
+        incoming = outgoing = f;
+      } else {
+        incoming = f.incoming;
+        outgoing = f.outgoing;
+      }
+
+      if (incoming in key) {
+        result[outgoing] = convertBNtoBuffer(key[incoming]);
+      }
+    });
+
+    return Promise.resolve(result);
+  },
+  import: function(input) {
+    if (validators.oid !== input.keyOid) {
+      return null;
+    }
+
+    if (!input.parsed) {
+      // coerce capture.keyValue to DER
+      if ("string" === typeof input.keyValue) {
+        input.keyValue = forge.asn1.fromDer(input.keyValue);
+      } else if (Array.isArray(input.keyValue)) {
+        input.keyValue = input.keyValue[0];
+      }
+      // capture key factors
+      var validator = ("private" === input.type) ?
+                      validators.privateKey :
+                      validators.publicKey;
+      var capture = {},
+          errors = [];
+      if (!forge.asn1.validate(input.keyValue, validator, capture, errors)) {
+        return null;
+      }
+      input = capture;
+    }
+
+    // convert factors to Buffers
+    var output = {
+      kty: "RSA"
+    };
+    ["n", "e", "d", "p", "q", "dp", "dq", "qi"].forEach(function(f) {
+      if (!(f in input)) {
+        return;
+      }
+      var b = new Buffer(input[f], "binary");
+      // remove leading zero padding if any
+      if (0 === b[0]) {
+        b = b.slice(1);
+      }
+      output[f] = b;
+    });
+    return output;
+  }
+};
+
+// public API
+module.exports = Object.freeze({
+  config: JWKRsaCfg,
+  factory: JWKRsaFactory
+});
+
+// registration
+(function(REGISTRY) {
+  REGISTRY.register(JWKRsaFactory);
+})(require("./keystore").registry);
+
+}).call(this,require("buffer").Buffer)
+},{"../algorithms/rsa-util":15,"../deps/forge.js":27,"./basekey.js":34,"./helpers.js":37,"./keystore":39,"buffer":204}],42:[function(require,module,exports){
+/*!
+ * jws/defaults.js - Defaults for JWSs
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+/**
+ * @description
+ * The default options for {@link JWS.createSign}.
+ *
+ * @property {Boolean} compact Determines if the output is the Compact
+ *           serialization (`true`) or the JSON serialization (**`false`**,
+ *           the default).
+ * @property {String|String[]} protect The names of the headers to integrity
+ *           protect.  The value `""` means that none of header parameters
+ *           are integrity protected, while `"*"` (the default) means that all
+ *           headers parameter sare integrity protected.
+ */
+var JWSDefaults = {
+    compact: false,
+    protect: "*"
+};
+
+module.exports = JWSDefaults;
+
+},{}],43:[function(require,module,exports){
+/*!
+ * jws/helpers.js - JWS Internal Helper Functions
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+module.exports = {
+  slice: function(input, start) {
+    return Array.prototype.slice.call(input, start || 0);
+  }
+};
+
+},{}],44:[function(require,module,exports){
+/*!
+ * jws/index.js - JSON Web Signature (JWS) Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var JWS = {
+  createSign: require("./sign").createSign,
+  createVerify: require("./verify").createVerify
+};
+
+module.exports = JWS;
+
+},{"./sign":45,"./verify":46}],45:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jws/sign.js - Sign to JWS
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var clone = require("lodash.clone"),
+    merge = require("../util/merge"),
+    uniq = require("lodash.uniq"),
+    util = require("../util"),
+    JWK = require("../jwk"),
+    slice = require("./helpers").slice;
+
+var DEFAULTS = require("./defaults");
+
+/**
+ * @class JWS.Signer
+ * @classdesc Generator of signed content.
+ *
+ * @description
+ * **NOTE:** this class cannot be instantiated directly. Instead call {@link
+ * JWS.createSign}.
+ */
+var JWSSigner = function(cfg, signatories) {
+  var finalized = false,
+      format = cfg.format || "general",
+      content = new Buffer(0);
+
+  /**
+  * @member {Boolean} JWS.Signer#compact
+  * @description
+  * Indicates whether the outuput of this signature generator is using
+  * the Compact serialization (`true`) or the JSON serialization
+  * (`false`).
+  */
+  Object.defineProperty(this, "compact", {
+    get: function() {
+      return "compact" === format;
+    },
+    enumerable: true
+  });
+  Object.defineProperty(this, "format", {
+    get: function() {
+      return format;
+    },
+    enumerable: true
+  });
+
+  /**
+  * @method JWS.Signer#update
+  * @description
+  * Updates the signing content for this signature content. The content
+  * is appended to the end of any other content already applied.
+  *
+  * If {data} is a Buffer, {encoding} is ignored. Otherwise, {data} is
+  * converted to a Buffer internally to {encoding}.
+  *
+  * @param {Buffer|String} data The data to sign.
+  * @param {String} [encoding="binary"] The encoding of {data}.
+  * @returns {JWS.Signer} This signature generator.
+  * @throws {Error} If a signature has already been generated.
+  */
+  Object.defineProperty(this, "update", {
+    value: function(data, encoding) {
+      if (finalized) {
+        throw new Error("already final");
+      }
+      if (data != null) {
+        data = util.asBuffer(data, encoding);
+        if (content.length) {
+          content = Buffer.concat([content, data],
+                      content.length + data.length);
+        } else {
+          content = data;
+        }
+      }
+
+      return this;
+    }
+  });
+  /**
+  * @method JWS.Signer#final
+  * @description
+  * Finishes the signature operation.
+  *
+  * The returned Promise, when fulfilled, is the JSON Web Signature (JWS)
+  * object, either in the Compact (if {@link JWS.Signer#format} is
+  * `"compact"`), the flattened JSON (if {@link JWS.Signer#format} is
+  * "flattened"), or the general JSON serialization.
+  *
+  * @param {Buffer|String} [data] The final content to apply.
+  * @param {String} [encoding="binary"] The encoding of the final content
+  *        (if any).
+  * @returns {Promise} The promise for the signatures
+  * @throws {Error} If a signature has already been generated.
+  */
+  Object.defineProperty(this, "final", {
+    value: function(data, encoding) {
+      if (finalized) {
+        return Promise.reject(new Error("already final"));
+      }
+
+      // last-minute data
+      this.update(data, encoding);
+
+      // mark as done...ish
+      finalized = true;
+      var promise;
+
+      // map signatory promises to just signatories
+      promise = Promise.all(signatories);
+      promise = promise.then(function(sigs) {
+        // prepare content
+        content = util.base64url.encode(content);
+
+        sigs = sigs.map(function(s) {
+          // prepare protected
+          var protect = {},
+              lenProtect = 0,
+              unprotect = clone(s.header),
+              lenUnprotect = Object.keys(unprotect).length;
+          s.protected.forEach(function(h) {
+            if (!(h in unprotect)) {
+              return;
+            }
+            protect[h] = unprotect[h];
+            lenProtect++;
+            delete unprotect[h];
+            lenUnprotect--;
+          });
+          if (lenProtect > 0) {
+            protect = JSON.stringify(protect);
+            protect = util.base64url.encode(protect);
+          } else {
+            protect = "";
+          }
+
+          // signit!
+          var data = new Buffer(protect + "." + content, "ascii");
+          s = s.key.sign(s.header.alg, data, s.header);
+          s = s.then(function(result) {
+            var sig = {};
+            if (0 < lenProtect) {
+              sig.protected = protect;
+            }
+            if (0 < lenUnprotect) {
+              sig.unprotected = unprotect;
+            }
+            sig.signature = util.base64url.encode(result.mac);
+            return sig;
+          });
+          return s;
+        });
+        sigs = [Promise.resolve(content)].concat(sigs);
+        return Promise.all(sigs);
+      });
+      promise = promise.then(function(results) {
+        var content = results[0];
+        return {
+          payload: content,
+          signatures: results.slice(1)
+        };
+      });
+      switch (format) {
+        case "compact":
+          promise = promise.then(function(jws) {
+            var compact = [
+              jws.signatures[0].protected,
+              jws.payload,
+              jws.signatures[0].signature
+            ];
+            compact = compact.join(".");
+            return compact;
+          });
+          break;
+        case "flattened":
+          promise = promise.then(function(jws) {
+            var flattened = {};
+            flattened.payload = jws.payload;
+
+            var sig = jws.signatures[0];
+            if (sig.protected) {
+              flattened.protected = sig.protected;
+            }
+            if (sig.header) {
+              flattened.header = sig.header;
+            }
+            flattened.signature = sig.signature;
+
+            return flattened;
+          });
+          break;
+      }
+
+      return promise;
+    }
+  });
+};
+
+
+/**
+ * @description
+ * Creates a new JWS.Signer with the given options and signatories.
+ *
+ * @param {Object} [opts] The signing options
+ * @param {Boolean} [opts.compact] Use compact serialization?
+ * @param {String} [opts.format] The serialization format to use ("compact",
+ *                 "flattened", "general")
+ * @param {Object} [opts.fields] Additional header fields
+ * @param {JWK.Key[]|Object[]} [signs] Signatories, either as an array of
+ *        JWK.Key instances; or an array of objects, each with the following
+ *        properties
+ * @param {JWK.Key} signs.key Key used to sign content
+ * @param {Object} [signs.header] Per-signatory header fields
+ * @param {String} [signs.reference] Reference field to identify the key
+ * @param {String[]|String} [signs.protect] List of fields to integrity
+ *        protect ("*" to protect all fields)
+ * @returns {JWS.Signer} The signature generator.
+ * @throws {Error} If Compact serialization is requested but there are
+ *         multiple signatories
+ */
+function createSign(opts, signs) {
+  // fixup signatories
+  var options = opts,
+      signStart = 1,
+      signList = signs;
+
+  if (arguments.length === 0) {
+    throw new Error("at least one signatory must be provided");
+  }
+  if (arguments.length === 1) {
+    signList = opts;
+    signStart = 0;
+    options = {};
+  } else if (JWK.isKey(opts) ||
+            (opts && "kty" in opts) ||
+            (opts && "key" in opts &&
+            (JWK.isKey(opts.key) || "kty" in opts.key))) {
+    signList = opts;
+    signStart = 0;
+    options = {};
+  } else {
+    options = clone(opts);
+  }
+  if (!Array.isArray(signList)) {
+    signList = slice(arguments, signStart);
+  }
+
+  // fixup options
+  options = merge(clone(DEFAULTS), options);
+
+  // setup header fields
+  var allFields = options.fields || {};
+  // setup serialization format
+  var format = options.format;
+  if (!format) {
+    format = options.compact ? "compact" : "general";
+  }
+  if (("compact" === format || "flattened" === format) && 1 < signList.length) {
+    throw new Error("too many signatories for compact or flattened JSON serialization");
+  }
+
+  // note protected fields (globally)
+  // protected fields are per signature
+  var protectAll = ("*" === options.protect);
+  if (options.compact) {
+    protectAll = true;
+  }
+
+  signList = signList.map(function(s, idx) {
+    var p;
+
+    // resolve a key
+    if (s && "kty" in s) {
+      p = JWK.asKey(s);
+      p = p.then(function(k) {
+        return {
+          key: k
+        };
+      });
+    } else if (s) {
+      p = JWK.asKey(s.key);
+      p = p.then(function(k) {
+        return {
+          header: s.header,
+          reference: s.reference,
+          protect: s.protect,
+          key: k
+        };
+      });
+    } else {
+      p = Promise.reject(new Error("missing key for signatory " + idx));
+    }
+
+    // resolve the complete signatory
+    p = p.then(function(signatory) {
+      var key = signatory.key;
+
+      // make sure there is a header
+      var header = signatory.header || {};
+      header = merge(merge({}, allFields), header);
+      signatory.header = header;
+
+      // ensure an algorithm
+      if (!header.alg) {
+        header.alg = key.algorithms(JWK.MODE_SIGN)[0] || "";
+      }
+
+      // determine the key reference
+      var ref = signatory.reference;
+      delete signatory.reference;
+      if (undefined === ref) {
+        // header already contains the key reference
+        ref = ["kid", "jku", "x5c", "x5t", "x5u"].some(function(k) {
+          return (k in header);
+        });
+        ref = !ref ? "kid" : null;
+      } else if ("boolean" === typeof ref) {
+        // explicit (positive | negative) request for key reference
+        ref = ref ? "kid" : null;
+      }
+      var jwk;
+      if (ref) {
+        jwk = key.toJSON();
+        if ("jwk" === ref) {
+          header.jwk = jwk;
+        } else if (ref in jwk) {
+          header[ref] = jwk[ref];
+        }
+      }
+
+      // determine protected fields
+      var protect = signatory.protect;
+      if (protectAll || "*" === protect) {
+        protect = Object.keys(header);
+      } else if ("string" === protect) {
+        protect = [protect];
+      } else if (Array.isArray(protect)) {
+        protect = protect.concat();
+      } else if (!protect) {
+        protect = [];
+      } else {
+        return Promise.reject(new Error("protect must be a list of fields"));
+      }
+      protect = uniq(protect);
+      signatory.protected = protect;
+
+      // freeze signatory
+      signatory = Object.freeze(signatory);
+      return signatory;
+    });
+
+    return p;
+  });
+
+  var cfg = {
+    format: format
+  };
+  return new JWSSigner(cfg,
+                       signList);
+}
+
+module.exports = {
+  signer: JWSSigner,
+  createSign: createSign
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../jwk":38,"../util":52,"../util/merge":53,"./defaults":42,"./helpers":43,"buffer":204,"lodash.clone":68,"lodash.uniq":145}],46:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * jws/verify.js - Verifies from a JWS
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var clone = require("lodash.clone"),
+    merge = require("../util/merge"),
+    base64url = require("../util/base64url"),
+    JWK = require("../jwk");
+
+/**
+ * @class JWS.Verifier
+ * @classdesc Parser of signed content.
+ *
+ * @description
+ * **NOTE:** this class cannot be instantiated directly. Instead call {@link
+ * JWS.createVerify}.
+ */
+var JWSVerifier = function(ks) {
+  var assumedKey,
+      keystore;
+
+  if (JWK.isKey(ks)) {
+      assumedKey = ks;
+      keystore = assumedKey.keystore;
+  } else if (JWK.isKeyStore(ks)) {
+      keystore = ks;
+  } else {
+      throw new TypeError("Keystore must be provided");
+  }
+
+  Object.defineProperty(this, "verify", {
+    value: function(input) {
+      if ("string" === typeof input) {
+        input = input.split(".");
+        input = {
+          payload: input[1],
+          signatures: [
+            {
+              protected: input[0],
+              signature: input[2]
+            }
+          ]
+        };
+      } else if (!input || "object" === input) {
+        throw new Error("invalid input");
+      }
+
+      // fixup "flattened JSON" to look like "general JSON"
+      if (input.signature) {
+        input.signatures = [
+          {
+            protected: input.protected || undefined,
+            header: input.header || undefined,
+            signature: input.signature
+          }
+        ];
+      }
+
+      // ensure signatories exists
+      var sigList = input.signatures || [{}];
+
+      // combine fields and decode signature per signatory
+      sigList = sigList.map(function(s) {
+        var header = clone(s.header || {});
+        var protect = s.protected ?
+                      JSON.parse(base64url.decode(s.protected, "utf8")) :
+                      {};
+        header = merge(header, protect);
+        var signature = base64url.decode(s.signature);
+
+        return {
+          protected: s.protected,
+          header: header,
+          signature: signature
+        };
+      });
+
+      var promise = new Promise(function(resolve, reject) {
+        var processSig = function() {
+          var sig = sigList.shift();
+          if (!sig) {
+            reject(new Error("no key found"));
+            return;
+          }
+
+          var content = new Buffer((sig.protected || "") + "." + input.payload, "ascii");
+
+          var algPromise,
+              algKey = assumedKey || keystore.get({
+            use: "sig",
+            alg: sig.header.alg,
+            kid: sig.header.kid
+          });
+          if (algKey) {
+            algPromise = algKey.verify(sig.header.alg,
+                                       content,
+                                       sig.signature);
+          } else {
+            algPromise = Promise.reject(new Error("key does not match"));
+          }
+          algPromise = algPromise.then(function(result) {
+            var payload = result.data.toString("ascii");
+            payload = payload.split(".")[1];
+            payload = base64url.decode(payload);
+            var jws = {
+              header: sig.header,
+              payload: payload,
+              signature: result.mac,
+              key: algKey
+            };
+            resolve(jws);
+          }, processSig);
+        };
+        processSig();
+      });
+
+      return promise;
+    }
+  });
+};
+
+/**
+ * @description
+ * Creates a new JWS.Verifier with the given Key or KeyStore.
+ *
+ * @param {JWK.Key|JWK.KeyStore} ks The Key or KeyStore to use for verification.
+ * @returns {JWS.Verifier} The new Verifier.
+ */
+function createVerify(ks) {
+  var vfy = new JWSVerifier(ks);
+
+  return vfy;
+}
+
+module.exports = {
+  verifier: JWSVerifier,
+  createVerify: createVerify
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../jwk":38,"../util/base64url":50,"../util/merge":53,"buffer":204,"lodash.clone":68}],47:[function(require,module,exports){
+/*!
+ * parse/compact.js - JOSE Compact Serialization Parser
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var jose = {
+  JWE: require("../jwe"),
+  JWS: require("../jws"),
+  util: require("../util")
+};
+
+function parseCompact(input) {
+  var parts = input.split(".");
+
+  var type,
+      op;
+  if (3 === parts.length) {
+    // JWS
+    type = "JWS";
+    op = function(ks) {
+      return jose.JWS.createVerify(ks).
+             verify(input);
+    };
+  } else if (5 === parts.length) {
+    // JWE
+    type = "JWE";
+    op = function(ks) {
+      return jose.JWE.createDecrypt(ks).
+             decrypt(input);
+    };
+  } else {
+    throw new TypeError("invalid jose serialization");
+  }
+
+  // parse header
+  var header;
+  header = jose.util.base64url.decode(parts[0], "utf8");
+  header = JSON.parse(header);
+  return {
+    type: type,
+    format: "compact",
+    input: input,
+    header: header,
+    perform: op
+  };
+}
+
+module.exports = parseCompact;
+
+},{"../jwe":33,"../jws":44,"../util":52}],48:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * parse/index.js - JOSE Parser Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var compact = require("./compact"),
+    json = require("./json");
+
+var parse = module.exports = function(input) {
+  if (Buffer.isBuffer(input)) {
+    // assume buffer holds a Compact Serialization string
+    return compact(input.toString("ascii"));
+  } else if ("string" === typeof input) {
+    return compact(input);
+  } else if (input) {
+    return json(input);
+  } else {
+    throw new TypeError("invalid input");
+  }
+};
+
+parse.compact = compact;
+parse.json = json;
+
+}).call(this,{"isBuffer":require("../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js")})
+},{"../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js":210,"./compact":47,"./json":49}],49:[function(require,module,exports){
+/*!
+ * parse/compact.js - JOSE JSON Serialization Parser
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var merge = require("../util/merge");
+
+var jose = {
+  JWE: require("../jwe"),
+  JWS: require("../jws"),
+  util: require("../util")
+};
+
+function parseJSON(input) {
+  var type,
+      op,
+      headers;
+
+  if ("signatures" in input || "signature" in input) {
+    // JWS
+    type = "JWS";
+    op = function(ks) {
+      return jose.JWS.createVerify(ks).
+             verify(input);
+    };
+    // headers can be (signatures[].protected, signatures[].header, signature.protected, signature.header)
+    headers = input.signatures ||
+              [ {
+                protected: input.protected,
+                header: input.header,
+                signature: input.signature
+              }];
+    headers = headers.map(function(sig) {
+      var all = {};
+      if (sig.header) {
+        all = merge(all, sig.header);
+      }
+
+      var prot;
+      if (sig.protected) {
+        prot = sig.protected;
+        prot = jose.util.base64url.decode(prot, "utf8");
+        prot = JSON.parse(prot);
+        all = merge(all, prot);
+      }
+
+      return all;
+    });
+  } else if ("ciphertext" in input) {
+    // JWE
+    type = "JWE";
+    op = function(ks) {
+      return jose.JWE.createDecrypt(ks).
+             decrypt(input);
+    };
+    // headers can be (protected, unprotected, recipients[].header)
+    var root = {};
+    if (input.protected) {
+      root.protected = input.protected;
+      root.protected = jose.util.base64url.decode(root.protected, "utf8");
+      root.protected = JSON.parse(root.protected);
+    }
+    if (input.unprotected) {
+      root.unprotected = input.unprotected;
+    }
+
+    headers = input.recipients || [{}];
+    headers = headers.map(function(rcpt) {
+      var all = {};
+      if (rcpt.header) {
+        all = merge(all, rcpt.header);
+      }
+      if (root.unprotected) {
+        all = merge(all, root.unprotected);
+      }
+      if (root.protected) {
+        all = merge(all, root.protected);
+      }
+
+      return all;
+    });
+  }
+
+  return {
+    type: type,
+    format: "json",
+    input: input,
+    all: headers,
+    perform: op
+  };
+}
+
+module.exports = parseJSON;
+
+},{"../jwe":33,"../jws":44,"../util":52,"../util/merge":53}],50:[function(require,module,exports){
+/*!
+ * util/base64url.js - Implementation of web-safe Base64 Encoder/Decoder
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var impl = require("urlsafe-base64");
+
+/**
+ * @namespace base64url
+ * @description
+ * Provides methods to encode and decode data according to the
+ * base64url alphabet.
+ */
+var base64url = {
+  /**
+   * @function
+   * Encodes the input to base64url.
+   *
+   * If {input} is a Buffer, then {encoding} is ignored. Otherwise,
+   * {encoding} can be one of "binary", "base64", "hex", "utf8".
+   *
+   * @param {Buffer|String} input The data to encode.
+   * @param {String} [encoding = binary] The input encoding format.
+   * @returns {String} the base64url encoding of {input}.
+   */
+  encode: impl.encode,
+  /**
+   * @function
+   * Decodes the input from base64url.
+   *
+   * @param {String} input The data to decode.
+   * @returns {Buffer|String} the base64url decoding of {input}.
+   */
+  decode: impl.decode
+};
+
+module.exports = base64url;
+
+},{"urlsafe-base64":195}],51:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * util/databuffer.js - Forge-compatible Buffer based on Node.js Buffers
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../deps/forge.js"),
+    base64url = require("./base64url.js");
+
+/**
+ *
+ */
+function DataBuffer(b, options) {
+  options = options || {};
+
+  // treat (views of) (Array)Buffers special
+  // NOTE: default implementation creates copies, but efficiently
+  //       wherever possible
+  if (Buffer.isBuffer(b)) {
+    this.data = b;
+  } else if (forge.util.isArrayBuffer(b)) {
+    b = new Uint8Array(b);
+    this.data = new Buffer(b);
+  } else if (forge.util.isArrayBufferView(b)) {
+    b = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    this.data = new Buffer(b);
+  }
+
+  if (this.data) {
+    this.write = this.data.length;
+    b = undefined;
+  }
+
+  // setup growth rate
+  this.growSize = options.growSize || DataBuffer.DEFAULT_GROW_SIZE;
+
+  // initialize pointers and data
+  this.write = this.write || 0;
+  this.read = this.read || 0;
+  if (b) {
+    this.putBytes(b);
+  } else if (!this.data) {
+    this.accommodate(0);
+  }
+
+  // massage read/write pointers
+  options.readOffset = ("readOffset" in options) ?
+                       options.readOffset :
+                       this.read;
+  this.write = ("writeOffset" in options) ?
+               options.writeOffset :
+               this.write;
+  this.read = Math.min(options.readOffset, this.write);
+}
+DataBuffer.DEFAULT_GROW_SIZE = 16;
+
+DataBuffer.prototype.length = function() {
+  return this.write - this.read;
+};
+DataBuffer.prototype.available = function() {
+  return this.data.length - this.write;
+};
+DataBuffer.prototype.isEmpty = function() {
+  return this.length() <= 0;
+};
+
+DataBuffer.prototype.accommodate = function(length) {
+  if (!this.data) {
+    // initializes a new buffer
+    length = Math.max(this.write + length, this.growSize);
+
+    this.data = new Buffer(length);
+  } else if (this.available() < length) {
+    length = Math.max(length, this.growSize);
+
+    // create a new empty buffer, and copy current one into it
+    var src = this.data;
+    var dst = new Buffer(src.length + length);
+    src.copy(dst, 0);
+
+    // set data as the new buffer
+    this.data = dst;
+  }
+  // ensure the rest is 0
+  this.data.fill(0, this.write);
+
+  return this;
+};
+DataBuffer.prototype.clear = function() {
+  this.read = this.write = 0;
+  this.data = new Buffer(0);
+  return this;
+};
+DataBuffer.prototype.truncate = function(count) {
+  // chop off <count> bytes from the end
+  this.write = this.read + Math.max(0, this.length() - count);
+  // ensure the remainder is 0
+  this.data.fill(0, this.write);
+  return this;
+};
+DataBuffer.prototype.compact = function() {
+  if (this.read > 0) {
+    if (this.write === this.read) {
+      this.read = this.write = 0;
+    } else {
+      this.data.copy(this.data, 0, this.read, this.write);
+      this.write = this.write - this.read;
+      this.read = 0;
+    }
+    // ensure remainder is 0
+    this.data.fill(0, this.write);
+  }
+  return this;
+};
+DataBuffer.prototype.copy = function() {
+  return new DataBuffer(this, {
+    readOffset: this.read,
+    writeOffset: this.write,
+    growSize: this.growSize
+  });
+};
+
+DataBuffer.prototype.equals = function(test) {
+  if (!DataBuffer.isBuffer(test)) {
+    return false;
+  }
+
+  if (test.length() !== this.length()) {
+    return false;
+  }
+
+  var rval = true,
+      delta = this.read - test.read;
+  // constant time
+  for (var idx = test.read; test.write > idx; idx++) {
+    rval = rval && (this.data[idx + delta] === test.data[idx]);
+  }
+  return rval;
+};
+DataBuffer.prototype.at = function(idx) {
+  return this.data[this.read + idx];
+};
+DataBuffer.prototype.setAt = function(idx, b) {
+  this.data[this.read + idx] = b;
+  return this;
+};
+DataBuffer.prototype.last = function() {
+  return this.data[this.write - 1];
+};
+DataBuffer.prototype.bytes = function(count) {
+  var rval;
+  if (undefined === count) {
+    count = this.length();
+  } else if (count) {
+    count = Math.min(count, this.length());
+  }
+
+  if (0 === count) {
+    rval = "";
+  } else {
+    var begin = this.read,
+        end = begin + count,
+        data = this.data.slice(begin, end);
+    rval = String.fromCharCode.apply(null, data);
+  }
+
+  return rval;
+};
+DataBuffer.prototype.buffer = function(count) {
+  var rval;
+  if (undefined === count) {
+    count = this.length();
+  } else if (count) {
+    count = Math.min(count, this.length());
+  }
+
+  if (0 === count) {
+    rval = new ArrayBuffer(0);
+  } else {
+    var begin = this.read,
+        end = begin + count,
+        data = this.data.slice(begin, end);
+    rval = new Uint8Array(end - begin);
+    rval.set(data);
+  }
+
+  return rval;
+};
+DataBuffer.prototype.native = function(count) {
+  var rval;
+  if ("undefined" === typeof count) {
+    count = this.length();
+  } else if (count) {
+    count = Math.min(count, this.length());
+  }
+
+  if (0 === count) {
+    rval = new Buffer(0);
+  } else {
+    var begin = this.read,
+        end = begin + count;
+    rval = this.data.slice(begin, end);
+  }
+
+  return rval;
+};
+
+DataBuffer.prototype.toHex = function() {
+  return this.toString("hex");
+};
+DataBuffer.prototype.toString = function(encoding) {
+  // short circuit empty string
+  if (0 === this.length()) {
+    return "";
+  }
+
+  var view = this.data.slice(this.read, this.write);
+  encoding = encoding || "utf8";
+  // special cases, then built-in support
+  switch (encoding) {
+    case "raw":
+      return view.toString("binary");
+    case "base64url":
+      return base64url.encode(view);
+    case "utf16":
+      return view.toString("ucs2");
+    default:
+      return view.toString(encoding);
+  }
+};
+
+DataBuffer.prototype.fillWithByte = function(b, n) {
+  if (!n) {
+    n = this.available();
+  }
+  this.accommodate(n);
+  this.data.fill(b, this.write, this.write + n);
+  this.write += n;
+
+  return this;
+};
+
+DataBuffer.prototype.getBuffer = function(count) {
+  var rval = this.buffer(count);
+  this.read += rval.byteLength;
+
+  return rval;
+};
+DataBuffer.prototype.putBuffer = function(bytes) {
+  return this.putBytes(bytes);
+};
+
+DataBuffer.prototype.getBytes = function(count) {
+  var rval = this.bytes(count);
+  this.read += rval.length;
+  return rval;
+};
+DataBuffer.prototype.putBytes = function(bytes, encoding) {
+  function augmentIt(src) {
+    return (Buffer._augment) ?
+           Buffer._augment(src) :
+           new Buffer(src);
+  }
+
+  if ("string" === typeof bytes) {
+    // fixup encoding
+    encoding = encoding || "binary";
+    switch (encoding) {
+      case "utf16":
+        // treat as UCS-2/UTF-16BE
+        encoding = "ucs-2";
+        break;
+      case "raw":
+        encoding = "binary";
+        break;
+      case "base64url":
+        // NOTE: this returns a Buffer
+        bytes = base64url.decode(bytes);
+        break;
+    }
+
+    // replace bytes with decoded Buffer (if not already)
+    if (!Buffer.isBuffer(bytes)) {
+      bytes = new Buffer(bytes, encoding);
+    }
+  }
+
+  var src, dst;
+  if (bytes instanceof DataBuffer) {
+    // be slightly more efficient
+    var orig = bytes;
+    bytes = orig.data.slice(orig.read, orig.write);
+    orig.read = orig.write;
+  } else if (bytes instanceof forge.util.ByteStringBuffer) {
+    bytes = bytes.getBytes();
+  }
+
+  // process array
+  if (Buffer.isBuffer(bytes)) {
+    src = bytes;
+  } else if (Array.isArray(bytes)) {
+    src = new Buffer(bytes);
+  } else if (forge.util.isArrayBuffer(bytes)) {
+    src = new Uint8Array(bytes);
+    src = augmentIt(src);
+  } else if (forge.util.isArrayBufferView(bytes)) {
+    src = (bytes instanceof Uint8Array) ?
+              bytes :
+              new Uint8Array(bytes.buffer,
+                             bytes.byteOffset,
+                             bytes.byteLength);
+    src = augmentIt(src);
+  } else {
+    throw new TypeError("invalid source type");
+  }
+
+  this.accommodate(src.length);
+  dst = this.data;
+  src.copy(dst, this.write);
+  this.write += src.length;
+
+  return this;
+};
+
+DataBuffer.prototype.getNative = function(count) {
+  var rval = this.native(count);
+  this.read += rval.length;
+  return rval;
+};
+DataBuffer.prototype.putNative = DataBuffer.prototype.putBuffer;
+
+DataBuffer.prototype.getByte = function() {
+  var b = this.data[this.read];
+  this.read = Math.min(this.read + 1, this.write);
+  return b;
+};
+DataBuffer.prototype.putByte = function(b) {
+  this.accommodate(1);
+  this.data[this.write] = b & 0xff;
+  this.write++;
+
+  return this;
+};
+
+DataBuffer.prototype.getInt16 = function() {
+  var n = (this.data[this.read] << 8) ^
+          (this.data[this.read + 1]);
+  this.read = Math.min(this.read + 2, this.write);
+  return n;
+};
+DataBuffer.prototype.putInt16 = function(n) {
+  this.accommodate(2);
+  this.data[this.write] = (n >>> 8) & 0xff;
+  this.data[this.write + 1] = n & 0xff;
+  this.write += 2;
+  return this;
+};
+
+DataBuffer.prototype.getInt24 = function() {
+  var n = (this.data[this.read] << 16) ^
+          (this.data[this.read + 1] << 8) ^
+          this.data[this.read + 2];
+  this.read = Math.min(this.read + 3, this.write);
+  return n;
+};
+DataBuffer.prototype.putInt24 = function(n) {
+  this.accommodate(3);
+  this.data[this.write] = (n >>> 16) & 0xff;
+  this.data[this.write + 1] = (n >>> 8) & 0xff;
+  this.data[this.write + 2] = n & 0xff;
+  this.write += 3;
+  return this;
+};
+
+DataBuffer.prototype.getInt32 = function() {
+  var n = (this.data[this.read] << 24) ^
+          (this.data[this.read + 1] << 16) ^
+          (this.data[this.read + 2] << 8) ^
+          this.data[this.read + 3];
+  this.read = Math.min(this.read + 4, this.write);
+  return n;
+};
+DataBuffer.prototype.putInt32 = function(n) {
+  this.accommodate(4);
+  this.data[this.write] = (n >>> 24) & 0xff;
+  this.data[this.write + 1] = (n >>> 16) & 0xff;
+  this.data[this.write + 2] = (n >>> 8) & 0xff;
+  this.data[this.write + 3] = n & 0xff;
+  this.write += 4;
+  return this;
+};
+
+DataBuffer.prototype.getInt16Le = function() {
+  var n = (this.data[this.read + 1] << 8) ^
+          this.data[this.read];
+  this.read = Math.min(this.read + 2, this.write);
+  return n;
+};
+DataBuffer.prototype.putInt16Le = function(n) {
+  this.accommodate(2);
+  this.data[this.write + 1] = (n >>> 8) & 0xff;
+  this.data[this.write] = n & 0xff;
+  this.write += 2;
+  return this;
+};
+
+DataBuffer.prototype.getInt24Le = function() {
+  var n = (this.data[this.read + 2] << 16) ^
+          (this.data[this.read + 1] << 8) ^
+          this.data[this.read];
+  this.read = Math.min(this.read + 3, this.write);
+  return n;
+};
+DataBuffer.prototype.putInt24Le = function(n) {
+  this.accommodate(3);
+  this.data[this.write + 2] = (n >>> 16) & 0xff;
+  this.data[this.write + 1] = (n >>> 8) & 0xff;
+  this.data[this.write] = n & 0xff;
+  this.write += 3;
+  return this;
+};
+DataBuffer.prototype.getInt32Le = function() {
+  var n = (this.data[this.read + 3] << 24) ^
+          (this.data[this.read + 2] << 16) ^
+          (this.data[this.read + 1] << 8) ^
+          this.data[this.read];
+  this.read = Math.min(this.read + 4, this.write);
+  return n;
+};
+DataBuffer.prototype.putInt32Le = function(n) {
+  this.accommodate(4);
+  this.data[this.write + 3] = (n >>> 24) & 0xff;
+  this.data[this.write + 2] = (n >>> 16) & 0xff;
+  this.data[this.write + 1] = (n >>> 8) & 0xff;
+  this.data[this.write] = n & 0xff;
+  this.write += 4;
+  return this;
+};
+
+DataBuffer.prototype.getInt = function(bits) {
+  var rval = 0;
+  do {
+    rval = (rval << 8) | this.getByte();
+    bits -= 8;
+  } while (bits > 0);
+  return rval;
+};
+DataBuffer.prototype.putInt = function(n, bits) {
+  this.accommodate(Math.ceil(bits / 8));
+  do {
+    bits -= 8;
+    this.putByte((n >> bits) & 0xff);
+  } while (bits > 0);
+  return this;
+};
+
+DataBuffer.prototype.putSignedInt = function(n, bits) {
+  if (n < 0) {
+    n += 2 << (bits - 1);
+  }
+  return this.putInt(n, bits);
+};
+
+DataBuffer.prototype.putString = function(str) {
+  return this.putBytes(str, "utf16");
+};
+
+DataBuffer.isBuffer = function(test) {
+  return (test instanceof DataBuffer);
+};
+DataBuffer.asBuffer = function(orig) {
+  return DataBuffer.isBuffer(orig) ?
+         orig :
+         orig ?
+         new DataBuffer(orig) :
+         new DataBuffer();
+};
+
+module.exports = forge.util.ByteBuffer = DataBuffer;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"./base64url.js":50,"buffer":204}],52:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * util/index.js - Utilities Entry Point
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var forge = require("../deps/forge.js");
+
+var util;
+
+function asBuffer(input, encoding) {
+  if (Buffer.isBuffer(input)) {
+    return input;
+  }
+
+  if ("string" === typeof input) {
+    encoding = encoding || "binary";
+    if ("base64url" === encoding) {
+      return util.base64url.decode(input);
+    }
+    return new Buffer(input, encoding);
+  }
+
+  // assume input is an Array, ArrayBuffer, or ArrayBufferView
+  if (forge.util.isArrayBufferView(input)) {
+    input = (input instanceof Uint8Array) ?
+            input :
+            new Uint8Array(input.buffer, input.byteOffset, input.byteOffset + input.byteLength);
+  } else if (forge.util.isArrayBuffer(input)) {
+    input = new Uint8Array(input);
+  }
+
+  var output;
+  if ("function" === typeof Buffer._augment) {
+    // web environments -- try to be efficient with memory
+    if (!(input instanceof Uint8Array)) {
+      input = new Uint8Array(input);
+    }
+    output = Buffer._augment(input);
+  } else {
+    // node.js -- don't care about being that efficient
+    output = new Buffer(input);
+  }
+
+  return output;
+}
+
+function randomBytes(len) {
+  return new Buffer(forge.random.getBytes(len), "binary");
+}
+
+util = {
+  base64url: require("./base64url.js"),
+  utf8: require("./utf8.js"),
+  asBuffer: asBuffer,
+  randomBytes: randomBytes
+};
+module.exports = util;
+
+}).call(this,require("buffer").Buffer)
+},{"../deps/forge.js":27,"./base64url.js":50,"./utf8.js":54,"buffer":204}],53:[function(require,module,exports){
+(function (Buffer){
+/*!
+ * util/utf8.js - Implementation of UTF-8 Encoder/Decoder
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var partialRight = require("lodash.partialright"),
+    merge = require("lodash.merge");
+
+var typedArrayCtors = (function() {
+  var ctors = [];
+  if ("undefined" !== typeof Uint8Array) {
+    ctors.push(Uint8Array);
+  }
+  if ("undefined" !== typeof Uint8ClampedArray) {
+    ctors.push(Uint8ClampedArray);
+  }
+  if ("undefined" !== typeof Uint16Array) {
+    ctors.push(Uint16Array);
+  }
+  if ("undefined" !== typeof Uint32Array) {
+    ctors.push(Uint32Array);
+  }
+  if ("undefined" !== typeof Float32Array) {
+    ctors.push(Float32Array);
+  }
+  if ("undefined" !== typeof Float64Array) {
+    ctors.push(Float64Array);
+  }
+  return ctors;
+})();
+
+function findTypedArrayFor(ta) {
+  var ctor;
+  for (var idx = 0; !ctor && typedArrayCtors.length > idx; idx++) {
+    if (ta instanceof typedArrayCtors[idx]) {
+      ctor = typedArrayCtors[idx];
+    }
+  }
+  return ctor;
+}
+
+function mergeBuffer(a, b) {
+  // TODO: should this be a copy, or the reference itself?
+  if (Buffer.isBuffer(b)) {
+    b = new Buffer(b);
+  } else {
+    var Ctor = findTypedArrayFor(b);
+    b = Ctor ?
+        new Ctor(b, b.byteOffset, b.byteLength) :
+        undefined;
+  }
+
+  // TODO: QUESTION: create a merged <whatever-a-is>??
+  // for now, a is b
+  a = b;
+
+  return b;
+}
+
+module.exports = partialRight(merge, mergeBuffer);
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":204,"lodash.merge":93,"lodash.partialright":128}],54:[function(require,module,exports){
+/*!
+ * util/utf8.js - Implementation of UTF-8 Encoder/Decoder
+ *
+ * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
+ */
+"use strict";
+
+var utf8 = exports;
+
+utf8.encode = function(input) {
+  var output = encodeURIComponent(input || "");
+  output = output.replace(/\%([0-9a-fA-F]{2})/g, function(m, code) {
+    code = parseInt(code, 16);
+    return String.fromCharCode(code);
+  });
+
+  return output;
+};
+utf8.decode = function(input) {
+  var output = (input || "").replace(/[\u0080-\u00ff]/g, function(m) {
+    var code = (0x100 | m.charCodeAt(0)).toString(16).substring(1);
+    return "%" + code;
+  });
+  output = decodeURIComponent(output);
+
+  return output;
+};
+
+},{}],55:[function(require,module,exports){
 (function (process,global){
 /*!
  * @overview es6-promise - a tiny implementation of Promises/A+.
@@ -974,7 +11132,7 @@
 
 
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"_process":159}],2:[function(require,module,exports){
+},{"_process":223}],56:[function(require,module,exports){
 (function(){
 
     // Copyright (c) 2005  Tom Wu
@@ -2334,7 +12492,1636 @@
 
 }).call(this);
 
-},{}],3:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
+/**
+ * lodash 3.2.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseAssign = require('lodash._baseassign'),
+    createAssigner = require('lodash._createassigner'),
+    keys = require('lodash.keys');
+
+/**
+ * A specialized version of `_.assign` for customizing assigned values without
+ * support for argument juggling, multiple sources, and `this` binding `customizer`
+ * functions.
+ *
+ * @private
+ * @param {Object} object The destination object.
+ * @param {Object} source The source object.
+ * @param {Function} customizer The function to customize assigned values.
+ * @returns {Object} Returns `object`.
+ */
+function assignWith(object, source, customizer) {
+  var index = -1,
+      props = keys(source),
+      length = props.length;
+
+  while (++index < length) {
+    var key = props[index],
+        value = object[key],
+        result = customizer(value, source[key], key, object, source);
+
+    if ((result === result ? (result !== value) : (value === value)) ||
+        (value === undefined && !(key in object))) {
+      object[key] = result;
+    }
+  }
+  return object;
+}
+
+/**
+ * Assigns own enumerable properties of source object(s) to the destination
+ * object. Subsequent sources overwrite property assignments of previous sources.
+ * If `customizer` is provided it is invoked to produce the assigned values.
+ * The `customizer` is bound to `thisArg` and invoked with five arguments:
+ * (objectValue, sourceValue, key, object, source).
+ *
+ * **Note:** This method mutates `object` and is based on
+ * [`Object.assign`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-object.assign).
+ *
+ * @static
+ * @memberOf _
+ * @alias extend
+ * @category Object
+ * @param {Object} object The destination object.
+ * @param {...Object} [sources] The source objects.
+ * @param {Function} [customizer] The function to customize assigned values.
+ * @param {*} [thisArg] The `this` binding of `customizer`.
+ * @returns {Object} Returns `object`.
+ * @example
+ *
+ * _.assign({ 'user': 'barney' }, { 'age': 40 }, { 'user': 'fred' });
+ * // => { 'user': 'fred', 'age': 40 }
+ *
+ * // using a customizer callback
+ * var defaults = _.partialRight(_.assign, function(value, other) {
+ *   return _.isUndefined(value) ? other : value;
+ * });
+ *
+ * defaults({ 'user': 'barney' }, { 'age': 36 }, { 'user': 'fred' });
+ * // => { 'user': 'barney', 'age': 36 }
+ */
+var assign = createAssigner(function(object, source, customizer) {
+  return customizer
+    ? assignWith(object, source, customizer)
+    : baseAssign(object, source);
+});
+
+module.exports = assign;
+
+},{"lodash._baseassign":58,"lodash._createassigner":60,"lodash.keys":64}],58:[function(require,module,exports){
+/**
+ * lodash 3.2.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseCopy = require('lodash._basecopy'),
+    keys = require('lodash.keys');
+
+/**
+ * The base implementation of `_.assign` without support for argument juggling,
+ * multiple sources, and `customizer` functions.
+ *
+ * @private
+ * @param {Object} object The destination object.
+ * @param {Object} source The source object.
+ * @returns {Object} Returns `object`.
+ */
+function baseAssign(object, source) {
+  return source == null
+    ? object
+    : baseCopy(source, keys(source), object);
+}
+
+module.exports = baseAssign;
+
+},{"lodash._basecopy":59,"lodash.keys":64}],59:[function(require,module,exports){
+/**
+ * lodash 3.0.1 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/**
+ * Copies properties of `source` to `object`.
+ *
+ * @private
+ * @param {Object} source The object to copy properties from.
+ * @param {Array} props The property names to copy.
+ * @param {Object} [object={}] The object to copy properties to.
+ * @returns {Object} Returns `object`.
+ */
+function baseCopy(source, props, object) {
+  object || (object = {});
+
+  var index = -1,
+      length = props.length;
+
+  while (++index < length) {
+    var key = props[index];
+    object[key] = source[key];
+  }
+  return object;
+}
+
+module.exports = baseCopy;
+
+},{}],60:[function(require,module,exports){
+/**
+ * lodash 3.1.1 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var bindCallback = require('lodash._bindcallback'),
+    isIterateeCall = require('lodash._isiterateecall'),
+    restParam = require('lodash.restparam');
+
+/**
+ * Creates a function that assigns properties of source object(s) to a given
+ * destination object.
+ *
+ * **Note:** This function is used to create `_.assign`, `_.defaults`, and `_.merge`.
+ *
+ * @private
+ * @param {Function} assigner The function to assign values.
+ * @returns {Function} Returns the new assigner function.
+ */
+function createAssigner(assigner) {
+  return restParam(function(object, sources) {
+    var index = -1,
+        length = object == null ? 0 : sources.length,
+        customizer = length > 2 ? sources[length - 2] : undefined,
+        guard = length > 2 ? sources[2] : undefined,
+        thisArg = length > 1 ? sources[length - 1] : undefined;
+
+    if (typeof customizer == 'function') {
+      customizer = bindCallback(customizer, thisArg, 5);
+      length -= 2;
+    } else {
+      customizer = typeof thisArg == 'function' ? thisArg : undefined;
+      length -= (customizer ? 1 : 0);
+    }
+    if (guard && isIterateeCall(sources[0], sources[1], guard)) {
+      customizer = length < 3 ? undefined : customizer;
+      length = 1;
+    }
+    while (++index < length) {
+      var source = sources[index];
+      if (source) {
+        assigner(object, source, customizer);
+      }
+    }
+    return object;
+  });
+}
+
+module.exports = createAssigner;
+
+},{"lodash._bindcallback":61,"lodash._isiterateecall":62,"lodash.restparam":63}],61:[function(require,module,exports){
+/**
+ * lodash 3.0.1 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/**
+ * A specialized version of `baseCallback` which only supports `this` binding
+ * and specifying the number of arguments to provide to `func`.
+ *
+ * @private
+ * @param {Function} func The function to bind.
+ * @param {*} thisArg The `this` binding of `func`.
+ * @param {number} [argCount] The number of arguments to provide to `func`.
+ * @returns {Function} Returns the callback.
+ */
+function bindCallback(func, thisArg, argCount) {
+  if (typeof func != 'function') {
+    return identity;
+  }
+  if (thisArg === undefined) {
+    return func;
+  }
+  switch (argCount) {
+    case 1: return function(value) {
+      return func.call(thisArg, value);
+    };
+    case 3: return function(value, index, collection) {
+      return func.call(thisArg, value, index, collection);
+    };
+    case 4: return function(accumulator, value, index, collection) {
+      return func.call(thisArg, accumulator, value, index, collection);
+    };
+    case 5: return function(value, other, key, object, source) {
+      return func.call(thisArg, value, other, key, object, source);
+    };
+  }
+  return function() {
+    return func.apply(thisArg, arguments);
+  };
+}
+
+/**
+ * This method returns the first argument provided to it.
+ *
+ * @static
+ * @memberOf _
+ * @category Utility
+ * @param {*} value Any value.
+ * @returns {*} Returns `value`.
+ * @example
+ *
+ * var object = { 'user': 'fred' };
+ *
+ * _.identity(object) === object;
+ * // => true
+ */
+function identity(value) {
+  return value;
+}
+
+module.exports = bindCallback;
+
+},{}],62:[function(require,module,exports){
+/**
+ * lodash 3.0.9 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** Used to detect unsigned integer values. */
+var reIsUint = /^\d+$/;
+
+/**
+ * Used as the [maximum length](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-number.max_safe_integer)
+ * of an array-like value.
+ */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/**
+ * The base implementation of `_.property` without support for deep paths.
+ *
+ * @private
+ * @param {string} key The key of the property to get.
+ * @returns {Function} Returns the new function.
+ */
+function baseProperty(key) {
+  return function(object) {
+    return object == null ? undefined : object[key];
+  };
+}
+
+/**
+ * Gets the "length" property value of `object`.
+ *
+ * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
+ * that affects Safari on at least iOS 8.1-8.3 ARM64.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {*} Returns the "length" value.
+ */
+var getLength = baseProperty('length');
+
+/**
+ * Checks if `value` is array-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
+ */
+function isArrayLike(value) {
+  return value != null && isLength(getLength(value));
+}
+
+/**
+ * Checks if `value` is a valid array-like index.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
+ * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
+ */
+function isIndex(value, length) {
+  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
+  length = length == null ? MAX_SAFE_INTEGER : length;
+  return value > -1 && value % 1 == 0 && value < length;
+}
+
+/**
+ * Checks if the provided arguments are from an iteratee call.
+ *
+ * @private
+ * @param {*} value The potential iteratee value argument.
+ * @param {*} index The potential iteratee index or key argument.
+ * @param {*} object The potential iteratee object argument.
+ * @returns {boolean} Returns `true` if the arguments are from an iteratee call, else `false`.
+ */
+function isIterateeCall(value, index, object) {
+  if (!isObject(object)) {
+    return false;
+  }
+  var type = typeof index;
+  if (type == 'number'
+      ? (isArrayLike(object) && isIndex(index, object.length))
+      : (type == 'string' && index in object)) {
+    var other = object[index];
+    return value === value ? (value === other) : (other !== other);
+  }
+  return false;
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is based on [`ToLength`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-tolength).
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ */
+function isLength(value) {
+  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+module.exports = isIterateeCall;
+
+},{}],63:[function(require,module,exports){
+/**
+ * lodash 3.6.1 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** Used as the `TypeError` message for "Functions" methods. */
+var FUNC_ERROR_TEXT = 'Expected a function';
+
+/* Native method references for those with the same name as other `lodash` methods. */
+var nativeMax = Math.max;
+
+/**
+ * Creates a function that invokes `func` with the `this` binding of the
+ * created function and arguments from `start` and beyond provided as an array.
+ *
+ * **Note:** This method is based on the [rest parameter](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/rest_parameters).
+ *
+ * @static
+ * @memberOf _
+ * @category Function
+ * @param {Function} func The function to apply a rest parameter to.
+ * @param {number} [start=func.length-1] The start position of the rest parameter.
+ * @returns {Function} Returns the new function.
+ * @example
+ *
+ * var say = _.restParam(function(what, names) {
+ *   return what + ' ' + _.initial(names).join(', ') +
+ *     (_.size(names) > 1 ? ', & ' : '') + _.last(names);
+ * });
+ *
+ * say('hello', 'fred', 'barney', 'pebbles');
+ * // => 'hello fred, barney, & pebbles'
+ */
+function restParam(func, start) {
+  if (typeof func != 'function') {
+    throw new TypeError(FUNC_ERROR_TEXT);
+  }
+  start = nativeMax(start === undefined ? (func.length - 1) : (+start || 0), 0);
+  return function() {
+    var args = arguments,
+        index = -1,
+        length = nativeMax(args.length - start, 0),
+        rest = Array(length);
+
+    while (++index < length) {
+      rest[index] = args[start + index];
+    }
+    switch (start) {
+      case 0: return func.call(this, rest);
+      case 1: return func.call(this, args[0], rest);
+      case 2: return func.call(this, args[0], args[1], rest);
+    }
+    var otherArgs = Array(start + 1);
+    index = -1;
+    while (++index < start) {
+      otherArgs[index] = args[index];
+    }
+    otherArgs[start] = rest;
+    return func.apply(this, otherArgs);
+  };
+}
+
+module.exports = restParam;
+
+},{}],64:[function(require,module,exports){
+/**
+ * lodash 3.1.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var getNative = require('lodash._getnative'),
+    isArguments = require('lodash.isarguments'),
+    isArray = require('lodash.isarray');
+
+/** Used to detect unsigned integer values. */
+var reIsUint = /^\d+$/;
+
+/** Used for native method references. */
+var objectProto = Object.prototype;
+
+/** Used to check objects for own properties. */
+var hasOwnProperty = objectProto.hasOwnProperty;
+
+/* Native method references for those with the same name as other `lodash` methods. */
+var nativeKeys = getNative(Object, 'keys');
+
+/**
+ * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
+ * of an array-like value.
+ */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/**
+ * The base implementation of `_.property` without support for deep paths.
+ *
+ * @private
+ * @param {string} key The key of the property to get.
+ * @returns {Function} Returns the new function.
+ */
+function baseProperty(key) {
+  return function(object) {
+    return object == null ? undefined : object[key];
+  };
+}
+
+/**
+ * Gets the "length" property value of `object`.
+ *
+ * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
+ * that affects Safari on at least iOS 8.1-8.3 ARM64.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {*} Returns the "length" value.
+ */
+var getLength = baseProperty('length');
+
+/**
+ * Checks if `value` is array-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
+ */
+function isArrayLike(value) {
+  return value != null && isLength(getLength(value));
+}
+
+/**
+ * Checks if `value` is a valid array-like index.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
+ * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
+ */
+function isIndex(value, length) {
+  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
+  length = length == null ? MAX_SAFE_INTEGER : length;
+  return value > -1 && value % 1 == 0 && value < length;
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ */
+function isLength(value) {
+  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * A fallback implementation of `Object.keys` which creates an array of the
+ * own enumerable property names of `object`.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {Array} Returns the array of property names.
+ */
+function shimKeys(object) {
+  var props = keysIn(object),
+      propsLength = props.length,
+      length = propsLength && object.length;
+
+  var allowIndexes = !!length && isLength(length) &&
+    (isArray(object) || isArguments(object));
+
+  var index = -1,
+      result = [];
+
+  while (++index < propsLength) {
+    var key = props[index];
+    if ((allowIndexes && isIndex(key, length)) || hasOwnProperty.call(object, key)) {
+      result.push(key);
+    }
+  }
+  return result;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Creates an array of the own enumerable property names of `object`.
+ *
+ * **Note:** Non-object values are coerced to objects. See the
+ * [ES spec](http://ecma-international.org/ecma-262/6.0/#sec-object.keys)
+ * for more details.
+ *
+ * @static
+ * @memberOf _
+ * @category Object
+ * @param {Object} object The object to query.
+ * @returns {Array} Returns the array of property names.
+ * @example
+ *
+ * function Foo() {
+ *   this.a = 1;
+ *   this.b = 2;
+ * }
+ *
+ * Foo.prototype.c = 3;
+ *
+ * _.keys(new Foo);
+ * // => ['a', 'b'] (iteration order is not guaranteed)
+ *
+ * _.keys('hi');
+ * // => ['0', '1']
+ */
+var keys = !nativeKeys ? shimKeys : function(object) {
+  var Ctor = object == null ? undefined : object.constructor;
+  if ((typeof Ctor == 'function' && Ctor.prototype === object) ||
+      (typeof object != 'function' && isArrayLike(object))) {
+    return shimKeys(object);
+  }
+  return isObject(object) ? nativeKeys(object) : [];
+};
+
+/**
+ * Creates an array of the own and inherited enumerable property names of `object`.
+ *
+ * **Note:** Non-object values are coerced to objects.
+ *
+ * @static
+ * @memberOf _
+ * @category Object
+ * @param {Object} object The object to query.
+ * @returns {Array} Returns the array of property names.
+ * @example
+ *
+ * function Foo() {
+ *   this.a = 1;
+ *   this.b = 2;
+ * }
+ *
+ * Foo.prototype.c = 3;
+ *
+ * _.keysIn(new Foo);
+ * // => ['a', 'b', 'c'] (iteration order is not guaranteed)
+ */
+function keysIn(object) {
+  if (object == null) {
+    return [];
+  }
+  if (!isObject(object)) {
+    object = Object(object);
+  }
+  var length = object.length;
+  length = (length && isLength(length) &&
+    (isArray(object) || isArguments(object)) && length) || 0;
+
+  var Ctor = object.constructor,
+      index = -1,
+      isProto = typeof Ctor == 'function' && Ctor.prototype === object,
+      result = Array(length),
+      skipIndexes = length > 0;
+
+  while (++index < length) {
+    result[index] = (index + '');
+  }
+  for (var key in object) {
+    if (!(skipIndexes && isIndex(key, length)) &&
+        !(key == 'constructor' && (isProto || !hasOwnProperty.call(object, key)))) {
+      result.push(key);
+    }
+  }
+  return result;
+}
+
+module.exports = keys;
+
+},{"lodash._getnative":65,"lodash.isarguments":66,"lodash.isarray":67}],65:[function(require,module,exports){
+/**
+ * lodash 3.9.1 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** `Object#toString` result references. */
+var funcTag = '[object Function]';
+
+/** Used to detect host constructors (Safari > 5). */
+var reIsHostCtor = /^\[object .+?Constructor\]$/;
+
+/**
+ * Checks if `value` is object-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
+ */
+function isObjectLike(value) {
+  return !!value && typeof value == 'object';
+}
+
+/** Used for native method references. */
+var objectProto = Object.prototype;
+
+/** Used to resolve the decompiled source of functions. */
+var fnToString = Function.prototype.toString;
+
+/** Used to check objects for own properties. */
+var hasOwnProperty = objectProto.hasOwnProperty;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objToString = objectProto.toString;
+
+/** Used to detect if a method is native. */
+var reIsNative = RegExp('^' +
+  fnToString.call(hasOwnProperty).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+  .replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g, '$1.*?') + '$'
+);
+
+/**
+ * Gets the native function at `key` of `object`.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @param {string} key The key of the method to get.
+ * @returns {*} Returns the function if it's native, else `undefined`.
+ */
+function getNative(object, key) {
+  var value = object == null ? undefined : object[key];
+  return isNative(value) ? value : undefined;
+}
+
+/**
+ * Checks if `value` is classified as a `Function` object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isFunction(_);
+ * // => true
+ *
+ * _.isFunction(/abc/);
+ * // => false
+ */
+function isFunction(value) {
+  // The use of `Object#toString` avoids issues with the `typeof` operator
+  // in older versions of Chrome and Safari which return 'function' for regexes
+  // and Safari 8 equivalents which return 'object' for typed array constructors.
+  return isObject(value) && objToString.call(value) == funcTag;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Checks if `value` is a native function.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a native function, else `false`.
+ * @example
+ *
+ * _.isNative(Array.prototype.push);
+ * // => true
+ *
+ * _.isNative(_);
+ * // => false
+ */
+function isNative(value) {
+  if (value == null) {
+    return false;
+  }
+  if (isFunction(value)) {
+    return reIsNative.test(fnToString.call(value));
+  }
+  return isObjectLike(value) && reIsHostCtor.test(value);
+}
+
+module.exports = getNative;
+
+},{}],66:[function(require,module,exports){
+/**
+ * lodash 3.0.7 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modularize exports="npm" -o ./`
+ * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** Used as references for various `Number` constants. */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/** `Object#toString` result references. */
+var argsTag = '[object Arguments]',
+    funcTag = '[object Function]',
+    genTag = '[object GeneratorFunction]';
+
+/** Used for built-in method references. */
+var objectProto = Object.prototype;
+
+/** Used to check objects for own properties. */
+var hasOwnProperty = objectProto.hasOwnProperty;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objectToString = objectProto.toString;
+
+/** Built-in value references. */
+var propertyIsEnumerable = objectProto.propertyIsEnumerable;
+
+/**
+ * The base implementation of `_.property` without support for deep paths.
+ *
+ * @private
+ * @param {string} key The key of the property to get.
+ * @returns {Function} Returns the new function.
+ */
+function baseProperty(key) {
+  return function(object) {
+    return object == null ? undefined : object[key];
+  };
+}
+
+/**
+ * Gets the "length" property value of `object`.
+ *
+ * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
+ * that affects Safari on at least iOS 8.1-8.3 ARM64.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {*} Returns the "length" value.
+ */
+var getLength = baseProperty('length');
+
+/**
+ * Checks if `value` is likely an `arguments` object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isArguments(function() { return arguments; }());
+ * // => true
+ *
+ * _.isArguments([1, 2, 3]);
+ * // => false
+ */
+function isArguments(value) {
+  // Safari 8.1 incorrectly makes `arguments.callee` enumerable in strict mode.
+  return isArrayLikeObject(value) && hasOwnProperty.call(value, 'callee') &&
+    (!propertyIsEnumerable.call(value, 'callee') || objectToString.call(value) == argsTag);
+}
+
+/**
+ * Checks if `value` is array-like. A value is considered array-like if it's
+ * not a function and has a `value.length` that's an integer greater than or
+ * equal to `0` and less than or equal to `Number.MAX_SAFE_INTEGER`.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
+ * @example
+ *
+ * _.isArrayLike([1, 2, 3]);
+ * // => true
+ *
+ * _.isArrayLike(document.body.children);
+ * // => true
+ *
+ * _.isArrayLike('abc');
+ * // => true
+ *
+ * _.isArrayLike(_.noop);
+ * // => false
+ */
+function isArrayLike(value) {
+  return value != null &&
+    !(typeof value == 'function' && isFunction(value)) && isLength(getLength(value));
+}
+
+/**
+ * This method is like `_.isArrayLike` except that it also checks if `value`
+ * is an object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an array-like object, else `false`.
+ * @example
+ *
+ * _.isArrayLikeObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isArrayLikeObject(document.body.children);
+ * // => true
+ *
+ * _.isArrayLikeObject('abc');
+ * // => false
+ *
+ * _.isArrayLikeObject(_.noop);
+ * // => false
+ */
+function isArrayLikeObject(value) {
+  return isObjectLike(value) && isArrayLike(value);
+}
+
+/**
+ * Checks if `value` is classified as a `Function` object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isFunction(_);
+ * // => true
+ *
+ * _.isFunction(/abc/);
+ * // => false
+ */
+function isFunction(value) {
+  // The use of `Object#toString` avoids issues with the `typeof` operator
+  // in Safari 8 which returns 'object' for typed array constructors, and
+  // PhantomJS 1.9 which returns 'function' for `NodeList` instances.
+  var tag = isObject(value) ? objectToString.call(value) : '';
+  return tag == funcTag || tag == genTag;
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is loosely based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ * @example
+ *
+ * _.isLength(3);
+ * // => true
+ *
+ * _.isLength(Number.MIN_VALUE);
+ * // => false
+ *
+ * _.isLength(Infinity);
+ * // => false
+ *
+ * _.isLength('3');
+ * // => false
+ */
+function isLength(value) {
+  return typeof value == 'number' &&
+    value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(_.noop);
+ * // => true
+ *
+ * _.isObject(null);
+ * // => false
+ */
+function isObject(value) {
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Checks if `value` is object-like. A value is object-like if it's not `null`
+ * and has a `typeof` result of "object".
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
+ * @example
+ *
+ * _.isObjectLike({});
+ * // => true
+ *
+ * _.isObjectLike([1, 2, 3]);
+ * // => true
+ *
+ * _.isObjectLike(_.noop);
+ * // => false
+ *
+ * _.isObjectLike(null);
+ * // => false
+ */
+function isObjectLike(value) {
+  return !!value && typeof value == 'object';
+}
+
+module.exports = isArguments;
+
+},{}],67:[function(require,module,exports){
+/**
+ * lodash 3.0.4 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** `Object#toString` result references. */
+var arrayTag = '[object Array]',
+    funcTag = '[object Function]';
+
+/** Used to detect host constructors (Safari > 5). */
+var reIsHostCtor = /^\[object .+?Constructor\]$/;
+
+/**
+ * Checks if `value` is object-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
+ */
+function isObjectLike(value) {
+  return !!value && typeof value == 'object';
+}
+
+/** Used for native method references. */
+var objectProto = Object.prototype;
+
+/** Used to resolve the decompiled source of functions. */
+var fnToString = Function.prototype.toString;
+
+/** Used to check objects for own properties. */
+var hasOwnProperty = objectProto.hasOwnProperty;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objToString = objectProto.toString;
+
+/** Used to detect if a method is native. */
+var reIsNative = RegExp('^' +
+  fnToString.call(hasOwnProperty).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+  .replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g, '$1.*?') + '$'
+);
+
+/* Native method references for those with the same name as other `lodash` methods. */
+var nativeIsArray = getNative(Array, 'isArray');
+
+/**
+ * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
+ * of an array-like value.
+ */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/**
+ * Gets the native function at `key` of `object`.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @param {string} key The key of the method to get.
+ * @returns {*} Returns the function if it's native, else `undefined`.
+ */
+function getNative(object, key) {
+  var value = object == null ? undefined : object[key];
+  return isNative(value) ? value : undefined;
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ */
+function isLength(value) {
+  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Checks if `value` is classified as an `Array` object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isArray([1, 2, 3]);
+ * // => true
+ *
+ * _.isArray(function() { return arguments; }());
+ * // => false
+ */
+var isArray = nativeIsArray || function(value) {
+  return isObjectLike(value) && isLength(value.length) && objToString.call(value) == arrayTag;
+};
+
+/**
+ * Checks if `value` is classified as a `Function` object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isFunction(_);
+ * // => true
+ *
+ * _.isFunction(/abc/);
+ * // => false
+ */
+function isFunction(value) {
+  // The use of `Object#toString` avoids issues with the `typeof` operator
+  // in older versions of Chrome and Safari which return 'function' for regexes
+  // and Safari 8 equivalents which return 'object' for typed array constructors.
+  return isObject(value) && objToString.call(value) == funcTag;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Checks if `value` is a native function.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a native function, else `false`.
+ * @example
+ *
+ * _.isNative(Array.prototype.push);
+ * // => true
+ *
+ * _.isNative(_);
+ * // => false
+ */
+function isNative(value) {
+  if (value == null) {
+    return false;
+  }
+  if (isFunction(value)) {
+    return reIsNative.test(fnToString.call(value));
+  }
+  return isObjectLike(value) && reIsHostCtor.test(value);
+}
+
+module.exports = isArray;
+
+},{}],68:[function(require,module,exports){
+/**
+ * lodash 3.0.3 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseClone = require('lodash._baseclone'),
+    bindCallback = require('lodash._bindcallback'),
+    isIterateeCall = require('lodash._isiterateecall');
+
+/**
+ * Creates a clone of `value`. If `isDeep` is `true` nested objects are cloned,
+ * otherwise they are assigned by reference. If `customizer` is provided it's
+ * invoked to produce the cloned values. If `customizer` returns `undefined`
+ * cloning is handled by the method instead. The `customizer` is bound to
+ * `thisArg` and invoked with up to three argument; (value [, index|key, object]).
+ *
+ * **Note:** This method is loosely based on the
+ * [structured clone algorithm](http://www.w3.org/TR/html5/infrastructure.html#internal-structured-cloning-algorithm).
+ * The enumerable properties of `arguments` objects and objects created by
+ * constructors other than `Object` are cloned to plain `Object` objects. An
+ * empty object is returned for uncloneable values such as functions, DOM nodes,
+ * Maps, Sets, and WeakMaps.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to clone.
+ * @param {boolean} [isDeep] Specify a deep clone.
+ * @param {Function} [customizer] The function to customize cloning values.
+ * @param {*} [thisArg] The `this` binding of `customizer`.
+ * @returns {*} Returns the cloned value.
+ * @example
+ *
+ * var users = [
+ *   { 'user': 'barney' },
+ *   { 'user': 'fred' }
+ * ];
+ *
+ * var shallow = _.clone(users);
+ * shallow[0] === users[0];
+ * // => true
+ *
+ * var deep = _.clone(users, true);
+ * deep[0] === users[0];
+ * // => false
+ *
+ * // using a customizer callback
+ * var el = _.clone(document.body, function(value) {
+ *   if (_.isElement(value)) {
+ *     return value.cloneNode(false);
+ *   }
+ * });
+ *
+ * el === document.body
+ * // => false
+ * el.nodeName
+ * // => BODY
+ * el.childNodes.length;
+ * // => 0
+ */
+function clone(value, isDeep, customizer, thisArg) {
+  if (isDeep && typeof isDeep != 'boolean' && isIterateeCall(value, isDeep, customizer)) {
+    isDeep = false;
+  }
+  else if (typeof isDeep == 'function') {
+    thisArg = customizer;
+    customizer = isDeep;
+    isDeep = false;
+  }
+  return typeof customizer == 'function'
+    ? baseClone(value, isDeep, bindCallback(customizer, thisArg, 3))
+    : baseClone(value, isDeep);
+}
+
+module.exports = clone;
+
+},{"lodash._baseclone":69,"lodash._bindcallback":79,"lodash._isiterateecall":80}],69:[function(require,module,exports){
+(function (global){
+/**
+ * lodash 3.3.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var arrayCopy = require('lodash._arraycopy'),
+    arrayEach = require('lodash._arrayeach'),
+    baseAssign = require('lodash._baseassign'),
+    baseFor = require('lodash._basefor'),
+    isArray = require('lodash.isarray'),
+    keys = require('lodash.keys');
+
+/** `Object#toString` result references. */
+var argsTag = '[object Arguments]',
+    arrayTag = '[object Array]',
+    boolTag = '[object Boolean]',
+    dateTag = '[object Date]',
+    errorTag = '[object Error]',
+    funcTag = '[object Function]',
+    mapTag = '[object Map]',
+    numberTag = '[object Number]',
+    objectTag = '[object Object]',
+    regexpTag = '[object RegExp]',
+    setTag = '[object Set]',
+    stringTag = '[object String]',
+    weakMapTag = '[object WeakMap]';
+
+var arrayBufferTag = '[object ArrayBuffer]',
+    float32Tag = '[object Float32Array]',
+    float64Tag = '[object Float64Array]',
+    int8Tag = '[object Int8Array]',
+    int16Tag = '[object Int16Array]',
+    int32Tag = '[object Int32Array]',
+    uint8Tag = '[object Uint8Array]',
+    uint8ClampedTag = '[object Uint8ClampedArray]',
+    uint16Tag = '[object Uint16Array]',
+    uint32Tag = '[object Uint32Array]';
+
+/** Used to match `RegExp` flags from their coerced string values. */
+var reFlags = /\w*$/;
+
+/** Used to identify `toStringTag` values supported by `_.clone`. */
+var cloneableTags = {};
+cloneableTags[argsTag] = cloneableTags[arrayTag] =
+cloneableTags[arrayBufferTag] = cloneableTags[boolTag] =
+cloneableTags[dateTag] = cloneableTags[float32Tag] =
+cloneableTags[float64Tag] = cloneableTags[int8Tag] =
+cloneableTags[int16Tag] = cloneableTags[int32Tag] =
+cloneableTags[numberTag] = cloneableTags[objectTag] =
+cloneableTags[regexpTag] = cloneableTags[stringTag] =
+cloneableTags[uint8Tag] = cloneableTags[uint8ClampedTag] =
+cloneableTags[uint16Tag] = cloneableTags[uint32Tag] = true;
+cloneableTags[errorTag] = cloneableTags[funcTag] =
+cloneableTags[mapTag] = cloneableTags[setTag] =
+cloneableTags[weakMapTag] = false;
+
+/** Used for native method references. */
+var objectProto = Object.prototype;
+
+/** Used to check objects for own properties. */
+var hasOwnProperty = objectProto.hasOwnProperty;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objToString = objectProto.toString;
+
+/** Native method references. */
+var ArrayBuffer = global.ArrayBuffer,
+    Uint8Array = global.Uint8Array;
+
+/**
+ * The base implementation of `_.clone` without support for argument juggling
+ * and `this` binding `customizer` functions.
+ *
+ * @private
+ * @param {*} value The value to clone.
+ * @param {boolean} [isDeep] Specify a deep clone.
+ * @param {Function} [customizer] The function to customize cloning values.
+ * @param {string} [key] The key of `value`.
+ * @param {Object} [object] The object `value` belongs to.
+ * @param {Array} [stackA=[]] Tracks traversed source objects.
+ * @param {Array} [stackB=[]] Associates clones with source counterparts.
+ * @returns {*} Returns the cloned value.
+ */
+function baseClone(value, isDeep, customizer, key, object, stackA, stackB) {
+  var result;
+  if (customizer) {
+    result = object ? customizer(value, key, object) : customizer(value);
+  }
+  if (result !== undefined) {
+    return result;
+  }
+  if (!isObject(value)) {
+    return value;
+  }
+  var isArr = isArray(value);
+  if (isArr) {
+    result = initCloneArray(value);
+    if (!isDeep) {
+      return arrayCopy(value, result);
+    }
+  } else {
+    var tag = objToString.call(value),
+        isFunc = tag == funcTag;
+
+    if (tag == objectTag || tag == argsTag || (isFunc && !object)) {
+      result = initCloneObject(isFunc ? {} : value);
+      if (!isDeep) {
+        return baseAssign(result, value);
+      }
+    } else {
+      return cloneableTags[tag]
+        ? initCloneByTag(value, tag, isDeep)
+        : (object ? value : {});
+    }
+  }
+  // Check for circular references and return its corresponding clone.
+  stackA || (stackA = []);
+  stackB || (stackB = []);
+
+  var length = stackA.length;
+  while (length--) {
+    if (stackA[length] == value) {
+      return stackB[length];
+    }
+  }
+  // Add the source value to the stack of traversed objects and associate it with its clone.
+  stackA.push(value);
+  stackB.push(result);
+
+  // Recursively populate clone (susceptible to call stack limits).
+  (isArr ? arrayEach : baseForOwn)(value, function(subValue, key) {
+    result[key] = baseClone(subValue, isDeep, customizer, key, value, stackA, stackB);
+  });
+  return result;
+}
+
+/**
+ * The base implementation of `_.forOwn` without support for callback
+ * shorthands and `this` binding.
+ *
+ * @private
+ * @param {Object} object The object to iterate over.
+ * @param {Function} iteratee The function invoked per iteration.
+ * @returns {Object} Returns `object`.
+ */
+function baseForOwn(object, iteratee) {
+  return baseFor(object, iteratee, keys);
+}
+
+/**
+ * Creates a clone of the given array buffer.
+ *
+ * @private
+ * @param {ArrayBuffer} buffer The array buffer to clone.
+ * @returns {ArrayBuffer} Returns the cloned array buffer.
+ */
+function bufferClone(buffer) {
+  var result = new ArrayBuffer(buffer.byteLength),
+      view = new Uint8Array(result);
+
+  view.set(new Uint8Array(buffer));
+  return result;
+}
+
+/**
+ * Initializes an array clone.
+ *
+ * @private
+ * @param {Array} array The array to clone.
+ * @returns {Array} Returns the initialized clone.
+ */
+function initCloneArray(array) {
+  var length = array.length,
+      result = new array.constructor(length);
+
+  // Add array properties assigned by `RegExp#exec`.
+  if (length && typeof array[0] == 'string' && hasOwnProperty.call(array, 'index')) {
+    result.index = array.index;
+    result.input = array.input;
+  }
+  return result;
+}
+
+/**
+ * Initializes an object clone.
+ *
+ * @private
+ * @param {Object} object The object to clone.
+ * @returns {Object} Returns the initialized clone.
+ */
+function initCloneObject(object) {
+  var Ctor = object.constructor;
+  if (!(typeof Ctor == 'function' && Ctor instanceof Ctor)) {
+    Ctor = Object;
+  }
+  return new Ctor;
+}
+
+/**
+ * Initializes an object clone based on its `toStringTag`.
+ *
+ * **Note:** This function only supports cloning values with tags of
+ * `Boolean`, `Date`, `Error`, `Number`, `RegExp`, or `String`.
+ *
+ * @private
+ * @param {Object} object The object to clone.
+ * @param {string} tag The `toStringTag` of the object to clone.
+ * @param {boolean} [isDeep] Specify a deep clone.
+ * @returns {Object} Returns the initialized clone.
+ */
+function initCloneByTag(object, tag, isDeep) {
+  var Ctor = object.constructor;
+  switch (tag) {
+    case arrayBufferTag:
+      return bufferClone(object);
+
+    case boolTag:
+    case dateTag:
+      return new Ctor(+object);
+
+    case float32Tag: case float64Tag:
+    case int8Tag: case int16Tag: case int32Tag:
+    case uint8Tag: case uint8ClampedTag: case uint16Tag: case uint32Tag:
+      var buffer = object.buffer;
+      return new Ctor(isDeep ? bufferClone(buffer) : buffer, object.byteOffset, object.length);
+
+    case numberTag:
+    case stringTag:
+      return new Ctor(object);
+
+    case regexpTag:
+      var result = new Ctor(object.source, reFlags.exec(object));
+      result.lastIndex = object.lastIndex;
+  }
+  return result;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+module.exports = baseClone;
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"lodash._arraycopy":70,"lodash._arrayeach":71,"lodash._baseassign":72,"lodash._basefor":74,"lodash.isarray":75,"lodash.keys":76}],70:[function(require,module,exports){
 /**
  * lodash 3.0.0 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
@@ -2365,7 +14152,7 @@ function arrayCopy(source, array) {
 
 module.exports = arrayCopy;
 
-},{}],4:[function(require,module,exports){
+},{}],71:[function(require,module,exports){
 /**
  * lodash 3.0.0 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
@@ -2398,7 +14185,1814 @@ function arrayEach(array, iteratee) {
 
 module.exports = arrayEach;
 
-},{}],5:[function(require,module,exports){
+},{}],72:[function(require,module,exports){
+arguments[4][58][0].apply(exports,arguments)
+},{"dup":58,"lodash._basecopy":73,"lodash.keys":76}],73:[function(require,module,exports){
+arguments[4][59][0].apply(exports,arguments)
+},{"dup":59}],74:[function(require,module,exports){
+/**
+ * lodash 3.0.3 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modularize exports="npm" -o ./`
+ * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/**
+ * The base implementation of `baseForIn` and `baseForOwn` which iterates
+ * over `object` properties returned by `keysFunc` invoking `iteratee` for
+ * each property. Iteratee functions may exit iteration early by explicitly
+ * returning `false`.
+ *
+ * @private
+ * @param {Object} object The object to iterate over.
+ * @param {Function} iteratee The function invoked per iteration.
+ * @param {Function} keysFunc The function to get the keys of `object`.
+ * @returns {Object} Returns `object`.
+ */
+var baseFor = createBaseFor();
+
+/**
+ * Creates a base function for methods like `_.forIn`.
+ *
+ * @private
+ * @param {boolean} [fromRight] Specify iterating from right to left.
+ * @returns {Function} Returns the new base function.
+ */
+function createBaseFor(fromRight) {
+  return function(object, iteratee, keysFunc) {
+    var index = -1,
+        iterable = Object(object),
+        props = keysFunc(object),
+        length = props.length;
+
+    while (length--) {
+      var key = props[fromRight ? length : ++index];
+      if (iteratee(iterable[key], key, iterable) === false) {
+        break;
+      }
+    }
+    return object;
+  };
+}
+
+module.exports = baseFor;
+
+},{}],75:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],76:[function(require,module,exports){
+arguments[4][64][0].apply(exports,arguments)
+},{"dup":64,"lodash._getnative":77,"lodash.isarguments":78,"lodash.isarray":75}],77:[function(require,module,exports){
+arguments[4][65][0].apply(exports,arguments)
+},{"dup":65}],78:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],79:[function(require,module,exports){
+arguments[4][61][0].apply(exports,arguments)
+},{"dup":61}],80:[function(require,module,exports){
+arguments[4][62][0].apply(exports,arguments)
+},{"dup":62}],81:[function(require,module,exports){
+/**
+ * lodash 3.3.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modularize exports="npm" -o ./`
+ * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** Used as references for various `Number` constants. */
+var INFINITY = 1 / 0,
+    MAX_SAFE_INTEGER = 9007199254740991,
+    MAX_INTEGER = 1.7976931348623157e+308,
+    NAN = 0 / 0;
+
+/** Used as references for the maximum length and index of an array. */
+var MAX_ARRAY_LENGTH = 4294967295;
+
+/** `Object#toString` result references. */
+var funcTag = '[object Function]',
+    genTag = '[object GeneratorFunction]';
+
+/** Used to match leading and trailing whitespace. */
+var reTrim = /^\s+|\s+$/g;
+
+/** Used to detect bad signed hexadecimal string values. */
+var reIsBadHex = /^[-+]0x[0-9a-f]+$/i;
+
+/** Used to detect binary string values. */
+var reIsBinary = /^0b[01]+$/i;
+
+/** Used to detect octal string values. */
+var reIsOctal = /^0o[0-7]+$/i;
+
+/** Used to detect unsigned integer values. */
+var reIsUint = /^(?:0|[1-9]\d*)$/;
+
+/** Built-in method references without a dependency on `root`. */
+var freeParseInt = parseInt;
+
+/**
+ * Checks if `value` is a valid array-like index.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
+ * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
+ */
+function isIndex(value, length) {
+  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
+  length = length == null ? MAX_SAFE_INTEGER : length;
+  return value > -1 && value % 1 == 0 && value < length;
+}
+
+/** Used for built-in method references. */
+var objectProto = Object.prototype;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objectToString = objectProto.toString;
+
+/**
+ * The base implementation of `_.clamp` which doesn't coerce arguments to numbers.
+ *
+ * @private
+ * @param {number} number The number to clamp.
+ * @param {number} [lower] The lower bound.
+ * @param {number} upper The upper bound.
+ * @returns {number} Returns the clamped number.
+ */
+function baseClamp(number, lower, upper) {
+  if (number === number) {
+    if (upper !== undefined) {
+      number = number <= upper ? number : upper;
+    }
+    if (lower !== undefined) {
+      number = number >= lower ? number : lower;
+    }
+  }
+  return number;
+}
+
+/**
+ * The base implementation of `_.fill` without an iteratee call guard.
+ *
+ * @private
+ * @param {Array} array The array to fill.
+ * @param {*} value The value to fill `array` with.
+ * @param {number} [start=0] The start position.
+ * @param {number} [end=array.length] The end position.
+ * @returns {Array} Returns `array`.
+ */
+function baseFill(array, value, start, end) {
+  var length = array.length;
+
+  start = toInteger(start);
+  if (start < 0) {
+    start = -start > length ? 0 : (length + start);
+  }
+  end = (end === undefined || end > length) ? length : toInteger(end);
+  if (end < 0) {
+    end += length;
+  }
+  end = start > end ? 0 : toLength(end);
+  while (start < end) {
+    array[start++] = value;
+  }
+  return array;
+}
+
+/**
+ * The base implementation of `_.property` without support for deep paths.
+ *
+ * @private
+ * @param {string} key The key of the property to get.
+ * @returns {Function} Returns the new function.
+ */
+function baseProperty(key) {
+  return function(object) {
+    return object == null ? undefined : object[key];
+  };
+}
+
+/**
+ * Gets the "length" property value of `object`.
+ *
+ * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
+ * that affects Safari on at least iOS 8.1-8.3 ARM64.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {*} Returns the "length" value.
+ */
+var getLength = baseProperty('length');
+
+/**
+ * Checks if the given arguments are from an iteratee call.
+ *
+ * @private
+ * @param {*} value The potential iteratee value argument.
+ * @param {*} index The potential iteratee index or key argument.
+ * @param {*} object The potential iteratee object argument.
+ * @returns {boolean} Returns `true` if the arguments are from an iteratee call, else `false`.
+ */
+function isIterateeCall(value, index, object) {
+  if (!isObject(object)) {
+    return false;
+  }
+  var type = typeof index;
+  if (type == 'number'
+      ? (isArrayLike(object) && isIndex(index, object.length))
+      : (type == 'string' && index in object)) {
+    return eq(object[index], value);
+  }
+  return false;
+}
+
+/**
+ * Fills elements of `array` with `value` from `start` up to, but not
+ * including, `end`.
+ *
+ * **Note:** This method mutates `array`.
+ *
+ * @static
+ * @memberOf _
+ * @category Array
+ * @param {Array} array The array to fill.
+ * @param {*} value The value to fill `array` with.
+ * @param {number} [start=0] The start position.
+ * @param {number} [end=array.length] The end position.
+ * @returns {Array} Returns `array`.
+ * @example
+ *
+ * var array = [1, 2, 3];
+ *
+ * _.fill(array, 'a');
+ * console.log(array);
+ * // => ['a', 'a', 'a']
+ *
+ * _.fill(Array(3), 2);
+ * // => [2, 2, 2]
+ *
+ * _.fill([4, 6, 8, 10], '*', 1, 3);
+ * // => [4, '*', '*', 10]
+ */
+function fill(array, value, start, end) {
+  var length = array ? array.length : 0;
+  if (!length) {
+    return [];
+  }
+  if (start && typeof start != 'number' && isIterateeCall(array, value, start)) {
+    start = 0;
+    end = length;
+  }
+  return baseFill(array, value, start, end);
+}
+
+/**
+ * Performs a [`SameValueZero`](http://ecma-international.org/ecma-262/6.0/#sec-samevaluezero)
+ * comparison between two values to determine if they are equivalent.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to compare.
+ * @param {*} other The other value to compare.
+ * @returns {boolean} Returns `true` if the values are equivalent, else `false`.
+ * @example
+ *
+ * var object = { 'user': 'fred' };
+ * var other = { 'user': 'fred' };
+ *
+ * _.eq(object, object);
+ * // => true
+ *
+ * _.eq(object, other);
+ * // => false
+ *
+ * _.eq('a', 'a');
+ * // => true
+ *
+ * _.eq('a', Object('a'));
+ * // => false
+ *
+ * _.eq(NaN, NaN);
+ * // => true
+ */
+function eq(value, other) {
+  return value === other || (value !== value && other !== other);
+}
+
+/**
+ * Checks if `value` is array-like. A value is considered array-like if it's
+ * not a function and has a `value.length` that's an integer greater than or
+ * equal to `0` and less than or equal to `Number.MAX_SAFE_INTEGER`.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
+ * @example
+ *
+ * _.isArrayLike([1, 2, 3]);
+ * // => true
+ *
+ * _.isArrayLike(document.body.children);
+ * // => true
+ *
+ * _.isArrayLike('abc');
+ * // => true
+ *
+ * _.isArrayLike(_.noop);
+ * // => false
+ */
+function isArrayLike(value) {
+  return value != null &&
+    !(typeof value == 'function' && isFunction(value)) && isLength(getLength(value));
+}
+
+/**
+ * Checks if `value` is classified as a `Function` object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isFunction(_);
+ * // => true
+ *
+ * _.isFunction(/abc/);
+ * // => false
+ */
+function isFunction(value) {
+  // The use of `Object#toString` avoids issues with the `typeof` operator
+  // in Safari 8 which returns 'object' for typed array constructors, and
+  // PhantomJS 1.9 which returns 'function' for `NodeList` instances.
+  var tag = isObject(value) ? objectToString.call(value) : '';
+  return tag == funcTag || tag == genTag;
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is loosely based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ * @example
+ *
+ * _.isLength(3);
+ * // => true
+ *
+ * _.isLength(Number.MIN_VALUE);
+ * // => false
+ *
+ * _.isLength(Infinity);
+ * // => false
+ *
+ * _.isLength('3');
+ * // => false
+ */
+function isLength(value) {
+  return typeof value == 'number' &&
+    value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(_.noop);
+ * // => true
+ *
+ * _.isObject(null);
+ * // => false
+ */
+function isObject(value) {
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Converts `value` to an integer.
+ *
+ * **Note:** This function is loosely based on [`ToInteger`](http://www.ecma-international.org/ecma-262/6.0/#sec-tointeger).
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to convert.
+ * @returns {number} Returns the converted integer.
+ * @example
+ *
+ * _.toInteger(3);
+ * // => 3
+ *
+ * _.toInteger(Number.MIN_VALUE);
+ * // => 0
+ *
+ * _.toInteger(Infinity);
+ * // => 1.7976931348623157e+308
+ *
+ * _.toInteger('3');
+ * // => 3
+ */
+function toInteger(value) {
+  if (!value) {
+    return value === 0 ? value : 0;
+  }
+  value = toNumber(value);
+  if (value === INFINITY || value === -INFINITY) {
+    var sign = (value < 0 ? -1 : 1);
+    return sign * MAX_INTEGER;
+  }
+  var remainder = value % 1;
+  return value === value ? (remainder ? value - remainder : value) : 0;
+}
+
+/**
+ * Converts `value` to an integer suitable for use as the length of an
+ * array-like object.
+ *
+ * **Note:** This method is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to convert.
+ * @returns {number} Returns the converted integer.
+ * @example
+ *
+ * _.toLength(3);
+ * // => 3
+ *
+ * _.toLength(Number.MIN_VALUE);
+ * // => 0
+ *
+ * _.toLength(Infinity);
+ * // => 4294967295
+ *
+ * _.toLength('3');
+ * // => 3
+ */
+function toLength(value) {
+  return value ? baseClamp(toInteger(value), 0, MAX_ARRAY_LENGTH) : 0;
+}
+
+/**
+ * Converts `value` to a number.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to process.
+ * @returns {number} Returns the number.
+ * @example
+ *
+ * _.toNumber(3);
+ * // => 3
+ *
+ * _.toNumber(Number.MIN_VALUE);
+ * // => 5e-324
+ *
+ * _.toNumber(Infinity);
+ * // => Infinity
+ *
+ * _.toNumber('3');
+ * // => 3
+ */
+function toNumber(value) {
+  if (isObject(value)) {
+    var other = isFunction(value.valueOf) ? value.valueOf() : value;
+    value = isObject(other) ? (other + '') : other;
+  }
+  if (typeof value != 'string') {
+    return value === 0 ? value : +value;
+  }
+  value = value.replace(reTrim, '');
+  var isBinary = reIsBinary.test(value);
+  return (isBinary || reIsOctal.test(value))
+    ? freeParseInt(value.slice(2), isBinary ? 2 : 8)
+    : (reIsBadHex.test(value) ? NAN : +value);
+}
+
+module.exports = fill;
+
+},{}],82:[function(require,module,exports){
+/**
+ * lodash 3.0.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseFlatten = require('lodash._baseflatten'),
+    isIterateeCall = require('lodash._isiterateecall');
+
+/**
+ * Flattens a nested array. If `isDeep` is `true` the array is recursively
+ * flattened, otherwise it is only flattened a single level.
+ *
+ * @static
+ * @memberOf _
+ * @category Array
+ * @param {Array} array The array to flatten.
+ * @param {boolean} [isDeep] Specify a deep flatten.
+ * @param- {Object} [guard] Enables use as a callback for functions like `_.map`.
+ * @returns {Array} Returns the new flattened array.
+ * @example
+ *
+ * _.flatten([1, [2, 3, [4]]]);
+ * // => [1, 2, 3, [4]]
+ *
+ * // using `isDeep`
+ * _.flatten([1, [2, 3, [4]]], true);
+ * // => [1, 2, 3, 4]
+ */
+function flatten(array, isDeep, guard) {
+  var length = array ? array.length : 0;
+  if (guard && isIterateeCall(array, isDeep, guard)) {
+    isDeep = false;
+  }
+  return length ? baseFlatten(array, isDeep) : [];
+}
+
+module.exports = flatten;
+
+},{"lodash._baseflatten":83,"lodash._isiterateecall":86}],83:[function(require,module,exports){
+/**
+ * lodash 3.1.4 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var isArguments = require('lodash.isarguments'),
+    isArray = require('lodash.isarray');
+
+/**
+ * Checks if `value` is object-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
+ */
+function isObjectLike(value) {
+  return !!value && typeof value == 'object';
+}
+
+/**
+ * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
+ * of an array-like value.
+ */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/**
+ * Appends the elements of `values` to `array`.
+ *
+ * @private
+ * @param {Array} array The array to modify.
+ * @param {Array} values The values to append.
+ * @returns {Array} Returns `array`.
+ */
+function arrayPush(array, values) {
+  var index = -1,
+      length = values.length,
+      offset = array.length;
+
+  while (++index < length) {
+    array[offset + index] = values[index];
+  }
+  return array;
+}
+
+/**
+ * The base implementation of `_.flatten` with added support for restricting
+ * flattening and specifying the start index.
+ *
+ * @private
+ * @param {Array} array The array to flatten.
+ * @param {boolean} [isDeep] Specify a deep flatten.
+ * @param {boolean} [isStrict] Restrict flattening to arrays-like objects.
+ * @param {Array} [result=[]] The initial result value.
+ * @returns {Array} Returns the new flattened array.
+ */
+function baseFlatten(array, isDeep, isStrict, result) {
+  result || (result = []);
+
+  var index = -1,
+      length = array.length;
+
+  while (++index < length) {
+    var value = array[index];
+    if (isObjectLike(value) && isArrayLike(value) &&
+        (isStrict || isArray(value) || isArguments(value))) {
+      if (isDeep) {
+        // Recursively flatten arrays (susceptible to call stack limits).
+        baseFlatten(value, isDeep, isStrict, result);
+      } else {
+        arrayPush(result, value);
+      }
+    } else if (!isStrict) {
+      result[result.length] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * The base implementation of `_.property` without support for deep paths.
+ *
+ * @private
+ * @param {string} key The key of the property to get.
+ * @returns {Function} Returns the new function.
+ */
+function baseProperty(key) {
+  return function(object) {
+    return object == null ? undefined : object[key];
+  };
+}
+
+/**
+ * Gets the "length" property value of `object`.
+ *
+ * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
+ * that affects Safari on at least iOS 8.1-8.3 ARM64.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {*} Returns the "length" value.
+ */
+var getLength = baseProperty('length');
+
+/**
+ * Checks if `value` is array-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
+ */
+function isArrayLike(value) {
+  return value != null && isLength(getLength(value));
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ */
+function isLength(value) {
+  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+module.exports = baseFlatten;
+
+},{"lodash.isarguments":84,"lodash.isarray":85}],84:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],85:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],86:[function(require,module,exports){
+arguments[4][62][0].apply(exports,arguments)
+},{"dup":62}],87:[function(require,module,exports){
+/**
+ * lodash 3.2.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseIndexOf = require('lodash._baseindexof'),
+    cacheIndexOf = require('lodash._cacheindexof'),
+    createCache = require('lodash._createcache'),
+    restParam = require('lodash.restparam');
+
+/**
+ * Used as the [maximum length](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-number.max_safe_integer)
+ * of an array-like value.
+ */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/**
+ * The base implementation of `_.property` without support for deep paths.
+ *
+ * @private
+ * @param {string} key The key of the property to get.
+ * @returns {Function} Returns the new function.
+ */
+function baseProperty(key) {
+  return function(object) {
+    return object == null ? undefined : object[key];
+  };
+}
+
+/**
+ * Gets the "length" property value of `object`.
+ *
+ * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
+ * that affects Safari on at least iOS 8.1-8.3 ARM64.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {*} Returns the "length" value.
+ */
+var getLength = baseProperty('length');
+
+/**
+ * Checks if `value` is array-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
+ */
+function isArrayLike(value) {
+  return value != null && isLength(getLength(value));
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is based on [`ToLength`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-tolength).
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ */
+function isLength(value) {
+  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Creates an array of unique values in all provided arrays using
+ * [`SameValueZero`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-samevaluezero)
+ * for equality comparisons.
+ *
+ * @static
+ * @memberOf _
+ * @category Array
+ * @param {...Array} [arrays] The arrays to inspect.
+ * @returns {Array} Returns the new array of shared values.
+ * @example
+ * _.intersection([1, 2], [4, 2], [2, 1]);
+ * // => [2]
+ */
+var intersection = restParam(function(arrays) {
+  var othLength = arrays.length,
+      othIndex = othLength,
+      caches = Array(length),
+      indexOf = baseIndexOf,
+      isCommon = true,
+      result = [];
+
+  while (othIndex--) {
+    var value = arrays[othIndex] = isArrayLike(value = arrays[othIndex]) ? value : [];
+    caches[othIndex] = (isCommon && value.length >= 120) ? createCache(othIndex && value) : null;
+  }
+  var array = arrays[0],
+      index = -1,
+      length = array ? array.length : 0,
+      seen = caches[0];
+
+  outer:
+  while (++index < length) {
+    value = array[index];
+    if ((seen ? cacheIndexOf(seen, value) : indexOf(result, value, 0)) < 0) {
+      var othIndex = othLength;
+      while (--othIndex) {
+        var cache = caches[othIndex];
+        if ((cache ? cacheIndexOf(cache, value) : indexOf(arrays[othIndex], value, 0)) < 0) {
+          continue outer;
+        }
+      }
+      if (seen) {
+        seen.push(value);
+      }
+      result.push(value);
+    }
+  }
+  return result;
+});
+
+module.exports = intersection;
+
+},{"lodash._baseindexof":88,"lodash._cacheindexof":89,"lodash._createcache":90,"lodash.restparam":92}],88:[function(require,module,exports){
+/**
+ * lodash 3.1.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/**
+ * The base implementation of `_.indexOf` without support for binary searches.
+ *
+ * @private
+ * @param {Array} array The array to search.
+ * @param {*} value The value to search for.
+ * @param {number} fromIndex The index to search from.
+ * @returns {number} Returns the index of the matched value, else `-1`.
+ */
+function baseIndexOf(array, value, fromIndex) {
+  if (value !== value) {
+    return indexOfNaN(array, fromIndex);
+  }
+  var index = fromIndex - 1,
+      length = array.length;
+
+  while (++index < length) {
+    if (array[index] === value) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Gets the index at which the first occurrence of `NaN` is found in `array`.
+ * If `fromRight` is provided elements of `array` are iterated from right to left.
+ *
+ * @private
+ * @param {Array} array The array to search.
+ * @param {number} fromIndex The index to search from.
+ * @param {boolean} [fromRight] Specify iterating from right to left.
+ * @returns {number} Returns the index of the matched `NaN`, else `-1`.
+ */
+function indexOfNaN(array, fromIndex, fromRight) {
+  var length = array.length,
+      index = fromIndex + (fromRight ? 0 : -1);
+
+  while ((fromRight ? index-- : ++index < length)) {
+    var other = array[index];
+    if (other !== other) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+module.exports = baseIndexOf;
+
+},{}],89:[function(require,module,exports){
+/**
+ * lodash 3.0.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/**
+ * Checks if `value` is in `cache` mimicking the return signature of
+ * `_.indexOf` by returning `0` if the value is found, else `-1`.
+ *
+ * @private
+ * @param {Object} cache The cache to search.
+ * @param {*} value The value to search for.
+ * @returns {number} Returns `0` if `value` is found, else `-1`.
+ */
+function cacheIndexOf(cache, value) {
+  var data = cache.data,
+      result = (typeof value == 'string' || isObject(value)) ? data.set.has(value) : data.hash[value];
+
+  return result ? 0 : -1;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+module.exports = cacheIndexOf;
+
+},{}],90:[function(require,module,exports){
+(function (global){
+/**
+ * lodash 3.1.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var getNative = require('lodash._getnative');
+
+/** Native method references. */
+var Set = getNative(global, 'Set');
+
+/* Native method references for those with the same name as other `lodash` methods. */
+var nativeCreate = getNative(Object, 'create');
+
+/**
+ *
+ * Creates a cache object to store unique values.
+ *
+ * @private
+ * @param {Array} [values] The values to cache.
+ */
+function SetCache(values) {
+  var length = values ? values.length : 0;
+
+  this.data = { 'hash': nativeCreate(null), 'set': new Set };
+  while (length--) {
+    this.push(values[length]);
+  }
+}
+
+/**
+ * Adds `value` to the cache.
+ *
+ * @private
+ * @name push
+ * @memberOf SetCache
+ * @param {*} value The value to cache.
+ */
+function cachePush(value) {
+  var data = this.data;
+  if (typeof value == 'string' || isObject(value)) {
+    data.set.add(value);
+  } else {
+    data.hash[value] = true;
+  }
+}
+
+/**
+ * Creates a `Set` cache object to optimize linear searches of large arrays.
+ *
+ * @private
+ * @param {Array} [values] The values to cache.
+ * @returns {null|Object} Returns the new cache object if `Set` is supported, else `null`.
+ */
+function createCache(values) {
+  return (nativeCreate && Set) ? new SetCache(values) : null;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+// Add functions to the `Set` cache.
+SetCache.prototype.push = cachePush;
+
+module.exports = createCache;
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"lodash._getnative":91}],91:[function(require,module,exports){
+arguments[4][65][0].apply(exports,arguments)
+},{"dup":65}],92:[function(require,module,exports){
+arguments[4][63][0].apply(exports,arguments)
+},{"dup":63}],93:[function(require,module,exports){
+/**
+ * lodash 3.3.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var arrayCopy = require('lodash._arraycopy'),
+    arrayEach = require('lodash._arrayeach'),
+    createAssigner = require('lodash._createassigner'),
+    isArguments = require('lodash.isarguments'),
+    isArray = require('lodash.isarray'),
+    isPlainObject = require('lodash.isplainobject'),
+    isTypedArray = require('lodash.istypedarray'),
+    keys = require('lodash.keys'),
+    toPlainObject = require('lodash.toplainobject');
+
+/**
+ * Checks if `value` is object-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
+ */
+function isObjectLike(value) {
+  return !!value && typeof value == 'object';
+}
+
+/**
+ * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
+ * of an array-like value.
+ */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/**
+ * The base implementation of `_.merge` without support for argument juggling,
+ * multiple sources, and `this` binding `customizer` functions.
+ *
+ * @private
+ * @param {Object} object The destination object.
+ * @param {Object} source The source object.
+ * @param {Function} [customizer] The function to customize merged values.
+ * @param {Array} [stackA=[]] Tracks traversed source objects.
+ * @param {Array} [stackB=[]] Associates values with source counterparts.
+ * @returns {Object} Returns `object`.
+ */
+function baseMerge(object, source, customizer, stackA, stackB) {
+  if (!isObject(object)) {
+    return object;
+  }
+  var isSrcArr = isArrayLike(source) && (isArray(source) || isTypedArray(source)),
+      props = isSrcArr ? undefined : keys(source);
+
+  arrayEach(props || source, function(srcValue, key) {
+    if (props) {
+      key = srcValue;
+      srcValue = source[key];
+    }
+    if (isObjectLike(srcValue)) {
+      stackA || (stackA = []);
+      stackB || (stackB = []);
+      baseMergeDeep(object, source, key, baseMerge, customizer, stackA, stackB);
+    }
+    else {
+      var value = object[key],
+          result = customizer ? customizer(value, srcValue, key, object, source) : undefined,
+          isCommon = result === undefined;
+
+      if (isCommon) {
+        result = srcValue;
+      }
+      if ((result !== undefined || (isSrcArr && !(key in object))) &&
+          (isCommon || (result === result ? (result !== value) : (value === value)))) {
+        object[key] = result;
+      }
+    }
+  });
+  return object;
+}
+
+/**
+ * A specialized version of `baseMerge` for arrays and objects which performs
+ * deep merges and tracks traversed objects enabling objects with circular
+ * references to be merged.
+ *
+ * @private
+ * @param {Object} object The destination object.
+ * @param {Object} source The source object.
+ * @param {string} key The key of the value to merge.
+ * @param {Function} mergeFunc The function to merge values.
+ * @param {Function} [customizer] The function to customize merged values.
+ * @param {Array} [stackA=[]] Tracks traversed source objects.
+ * @param {Array} [stackB=[]] Associates values with source counterparts.
+ * @returns {boolean} Returns `true` if the objects are equivalent, else `false`.
+ */
+function baseMergeDeep(object, source, key, mergeFunc, customizer, stackA, stackB) {
+  var length = stackA.length,
+      srcValue = source[key];
+
+  while (length--) {
+    if (stackA[length] == srcValue) {
+      object[key] = stackB[length];
+      return;
+    }
+  }
+  var value = object[key],
+      result = customizer ? customizer(value, srcValue, key, object, source) : undefined,
+      isCommon = result === undefined;
+
+  if (isCommon) {
+    result = srcValue;
+    if (isArrayLike(srcValue) && (isArray(srcValue) || isTypedArray(srcValue))) {
+      result = isArray(value)
+        ? value
+        : (isArrayLike(value) ? arrayCopy(value) : []);
+    }
+    else if (isPlainObject(srcValue) || isArguments(srcValue)) {
+      result = isArguments(value)
+        ? toPlainObject(value)
+        : (isPlainObject(value) ? value : {});
+    }
+    else {
+      isCommon = false;
+    }
+  }
+  // Add the source value to the stack of traversed objects and associate
+  // it with its merged value.
+  stackA.push(srcValue);
+  stackB.push(result);
+
+  if (isCommon) {
+    // Recursively merge objects and arrays (susceptible to call stack limits).
+    object[key] = mergeFunc(result, srcValue, customizer, stackA, stackB);
+  } else if (result === result ? (result !== value) : (value === value)) {
+    object[key] = result;
+  }
+}
+
+/**
+ * The base implementation of `_.property` without support for deep paths.
+ *
+ * @private
+ * @param {string} key The key of the property to get.
+ * @returns {Function} Returns the new function.
+ */
+function baseProperty(key) {
+  return function(object) {
+    return object == null ? undefined : object[key];
+  };
+}
+
+/**
+ * Gets the "length" property value of `object`.
+ *
+ * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
+ * that affects Safari on at least iOS 8.1-8.3 ARM64.
+ *
+ * @private
+ * @param {Object} object The object to query.
+ * @returns {*} Returns the "length" value.
+ */
+var getLength = baseProperty('length');
+
+/**
+ * Checks if `value` is array-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
+ */
+function isArrayLike(value) {
+  return value != null && isLength(getLength(value));
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ */
+function isLength(value) {
+  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Recursively merges own enumerable properties of the source object(s), that
+ * don't resolve to `undefined` into the destination object. Subsequent sources
+ * overwrite property assignments of previous sources. If `customizer` is
+ * provided it is invoked to produce the merged values of the destination and
+ * source properties. If `customizer` returns `undefined` merging is handled
+ * by the method instead. The `customizer` is bound to `thisArg` and invoked
+ * with five arguments: (objectValue, sourceValue, key, object, source).
+ *
+ * @static
+ * @memberOf _
+ * @category Object
+ * @param {Object} object The destination object.
+ * @param {...Object} [sources] The source objects.
+ * @param {Function} [customizer] The function to customize assigned values.
+ * @param {*} [thisArg] The `this` binding of `customizer`.
+ * @returns {Object} Returns `object`.
+ * @example
+ *
+ * var users = {
+ *   'data': [{ 'user': 'barney' }, { 'user': 'fred' }]
+ * };
+ *
+ * var ages = {
+ *   'data': [{ 'age': 36 }, { 'age': 40 }]
+ * };
+ *
+ * _.merge(users, ages);
+ * // => { 'data': [{ 'user': 'barney', 'age': 36 }, { 'user': 'fred', 'age': 40 }] }
+ *
+ * // using a customizer callback
+ * var object = {
+ *   'fruits': ['apple'],
+ *   'vegetables': ['beet']
+ * };
+ *
+ * var other = {
+ *   'fruits': ['banana'],
+ *   'vegetables': ['carrot']
+ * };
+ *
+ * _.merge(object, other, function(a, b) {
+ *   if (_.isArray(a)) {
+ *     return a.concat(b);
+ *   }
+ * });
+ * // => { 'fruits': ['apple', 'banana'], 'vegetables': ['beet', 'carrot'] }
+ */
+var merge = createAssigner(baseMerge);
+
+module.exports = merge;
+
+},{"lodash._arraycopy":94,"lodash._arrayeach":95,"lodash._createassigner":96,"lodash.isarguments":101,"lodash.isarray":102,"lodash.isplainobject":103,"lodash.istypedarray":105,"lodash.keys":106,"lodash.toplainobject":108}],94:[function(require,module,exports){
+arguments[4][70][0].apply(exports,arguments)
+},{"dup":70}],95:[function(require,module,exports){
+arguments[4][71][0].apply(exports,arguments)
+},{"dup":71}],96:[function(require,module,exports){
+arguments[4][60][0].apply(exports,arguments)
+},{"dup":60,"lodash._bindcallback":97,"lodash._isiterateecall":98,"lodash.restparam":99}],97:[function(require,module,exports){
+arguments[4][61][0].apply(exports,arguments)
+},{"dup":61}],98:[function(require,module,exports){
+arguments[4][62][0].apply(exports,arguments)
+},{"dup":62}],99:[function(require,module,exports){
+arguments[4][63][0].apply(exports,arguments)
+},{"dup":63}],100:[function(require,module,exports){
+arguments[4][65][0].apply(exports,arguments)
+},{"dup":65}],101:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],102:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],103:[function(require,module,exports){
+/**
+ * lodash 3.2.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseFor = require('lodash._basefor'),
+    isArguments = require('lodash.isarguments'),
+    keysIn = require('lodash.keysin');
+
+/** `Object#toString` result references. */
+var objectTag = '[object Object]';
+
+/**
+ * Checks if `value` is object-like.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
+ */
+function isObjectLike(value) {
+  return !!value && typeof value == 'object';
+}
+
+/** Used for native method references. */
+var objectProto = Object.prototype;
+
+/** Used to check objects for own properties. */
+var hasOwnProperty = objectProto.hasOwnProperty;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objToString = objectProto.toString;
+
+/**
+ * The base implementation of `_.forIn` without support for callback
+ * shorthands and `this` binding.
+ *
+ * @private
+ * @param {Object} object The object to iterate over.
+ * @param {Function} iteratee The function invoked per iteration.
+ * @returns {Object} Returns `object`.
+ */
+function baseForIn(object, iteratee) {
+  return baseFor(object, iteratee, keysIn);
+}
+
+/**
+ * Checks if `value` is a plain object, that is, an object created by the
+ * `Object` constructor or one with a `[[Prototype]]` of `null`.
+ *
+ * **Note:** This method assumes objects created by the `Object` constructor
+ * have no inherited enumerable properties.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a plain object, else `false`.
+ * @example
+ *
+ * function Foo() {
+ *   this.a = 1;
+ * }
+ *
+ * _.isPlainObject(new Foo);
+ * // => false
+ *
+ * _.isPlainObject([1, 2, 3]);
+ * // => false
+ *
+ * _.isPlainObject({ 'x': 0, 'y': 0 });
+ * // => true
+ *
+ * _.isPlainObject(Object.create(null));
+ * // => true
+ */
+function isPlainObject(value) {
+  var Ctor;
+
+  // Exit early for non `Object` objects.
+  if (!(isObjectLike(value) && objToString.call(value) == objectTag && !isArguments(value)) ||
+      (!hasOwnProperty.call(value, 'constructor') && (Ctor = value.constructor, typeof Ctor == 'function' && !(Ctor instanceof Ctor)))) {
+    return false;
+  }
+  // IE < 9 iterates inherited properties before own properties. If the first
+  // iterated property is an object's own property then there are no inherited
+  // enumerable properties.
+  var result;
+  // In most environments an object's own properties are iterated before
+  // its inherited properties. If the last iterated property is an object's
+  // own property then there are no inherited enumerable properties.
+  baseForIn(value, function(subValue, key) {
+    result = key;
+  });
+  return result === undefined || hasOwnProperty.call(value, result);
+}
+
+module.exports = isPlainObject;
+
+},{"lodash._basefor":104,"lodash.isarguments":101,"lodash.keysin":107}],104:[function(require,module,exports){
+arguments[4][74][0].apply(exports,arguments)
+},{"dup":74}],105:[function(require,module,exports){
+/**
+ * lodash 3.0.5 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modularize exports="npm" -o ./`
+ * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** Used as references for various `Number` constants. */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/** `Object#toString` result references. */
+var argsTag = '[object Arguments]',
+    arrayTag = '[object Array]',
+    boolTag = '[object Boolean]',
+    dateTag = '[object Date]',
+    errorTag = '[object Error]',
+    funcTag = '[object Function]',
+    mapTag = '[object Map]',
+    numberTag = '[object Number]',
+    objectTag = '[object Object]',
+    regexpTag = '[object RegExp]',
+    setTag = '[object Set]',
+    stringTag = '[object String]',
+    weakMapTag = '[object WeakMap]';
+
+var arrayBufferTag = '[object ArrayBuffer]',
+    float32Tag = '[object Float32Array]',
+    float64Tag = '[object Float64Array]',
+    int8Tag = '[object Int8Array]',
+    int16Tag = '[object Int16Array]',
+    int32Tag = '[object Int32Array]',
+    uint8Tag = '[object Uint8Array]',
+    uint8ClampedTag = '[object Uint8ClampedArray]',
+    uint16Tag = '[object Uint16Array]',
+    uint32Tag = '[object Uint32Array]';
+
+/** Used to identify `toStringTag` values of typed arrays. */
+var typedArrayTags = {};
+typedArrayTags[float32Tag] = typedArrayTags[float64Tag] =
+typedArrayTags[int8Tag] = typedArrayTags[int16Tag] =
+typedArrayTags[int32Tag] = typedArrayTags[uint8Tag] =
+typedArrayTags[uint8ClampedTag] = typedArrayTags[uint16Tag] =
+typedArrayTags[uint32Tag] = true;
+typedArrayTags[argsTag] = typedArrayTags[arrayTag] =
+typedArrayTags[arrayBufferTag] = typedArrayTags[boolTag] =
+typedArrayTags[dateTag] = typedArrayTags[errorTag] =
+typedArrayTags[funcTag] = typedArrayTags[mapTag] =
+typedArrayTags[numberTag] = typedArrayTags[objectTag] =
+typedArrayTags[regexpTag] = typedArrayTags[setTag] =
+typedArrayTags[stringTag] = typedArrayTags[weakMapTag] = false;
+
+/** Used for built-in method references. */
+var objectProto = Object.prototype;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objectToString = objectProto.toString;
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is loosely based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ * @example
+ *
+ * _.isLength(3);
+ * // => true
+ *
+ * _.isLength(Number.MIN_VALUE);
+ * // => false
+ *
+ * _.isLength(Infinity);
+ * // => false
+ *
+ * _.isLength('3');
+ * // => false
+ */
+function isLength(value) {
+  return typeof value == 'number' &&
+    value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Checks if `value` is object-like. A value is object-like if it's not `null`
+ * and has a `typeof` result of "object".
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
+ * @example
+ *
+ * _.isObjectLike({});
+ * // => true
+ *
+ * _.isObjectLike([1, 2, 3]);
+ * // => true
+ *
+ * _.isObjectLike(_.noop);
+ * // => false
+ *
+ * _.isObjectLike(null);
+ * // => false
+ */
+function isObjectLike(value) {
+  return !!value && typeof value == 'object';
+}
+
+/**
+ * Checks if `value` is classified as a typed array.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isTypedArray(new Uint8Array);
+ * // => true
+ *
+ * _.isTypedArray([]);
+ * // => false
+ */
+function isTypedArray(value) {
+  return isObjectLike(value) &&
+    isLength(value.length) && !!typedArrayTags[objectToString.call(value)];
+}
+
+module.exports = isTypedArray;
+
+},{}],106:[function(require,module,exports){
+arguments[4][64][0].apply(exports,arguments)
+},{"dup":64,"lodash._getnative":100,"lodash.isarguments":101,"lodash.isarray":102}],107:[function(require,module,exports){
+/**
+ * lodash 3.0.8 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var isArguments = require('lodash.isarguments'),
+    isArray = require('lodash.isarray');
+
+/** Used to detect unsigned integer values. */
+var reIsUint = /^\d+$/;
+
+/** Used for native method references. */
+var objectProto = Object.prototype;
+
+/** Used to check objects for own properties. */
+var hasOwnProperty = objectProto.hasOwnProperty;
+
+/**
+ * Used as the [maximum length](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-number.max_safe_integer)
+ * of an array-like value.
+ */
+var MAX_SAFE_INTEGER = 9007199254740991;
+
+/**
+ * Checks if `value` is a valid array-like index.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
+ * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
+ */
+function isIndex(value, length) {
+  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
+  length = length == null ? MAX_SAFE_INTEGER : length;
+  return value > -1 && value % 1 == 0 && value < length;
+}
+
+/**
+ * Checks if `value` is a valid array-like length.
+ *
+ * **Note:** This function is based on [`ToLength`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-tolength).
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
+ */
+function isLength(value) {
+  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Creates an array of the own and inherited enumerable property names of `object`.
+ *
+ * **Note:** Non-object values are coerced to objects.
+ *
+ * @static
+ * @memberOf _
+ * @category Object
+ * @param {Object} object The object to query.
+ * @returns {Array} Returns the array of property names.
+ * @example
+ *
+ * function Foo() {
+ *   this.a = 1;
+ *   this.b = 2;
+ * }
+ *
+ * Foo.prototype.c = 3;
+ *
+ * _.keysIn(new Foo);
+ * // => ['a', 'b', 'c'] (iteration order is not guaranteed)
+ */
+function keysIn(object) {
+  if (object == null) {
+    return [];
+  }
+  if (!isObject(object)) {
+    object = Object(object);
+  }
+  var length = object.length;
+  length = (length && isLength(length) &&
+    (isArray(object) || isArguments(object)) && length) || 0;
+
+  var Ctor = object.constructor,
+      index = -1,
+      isProto = typeof Ctor == 'function' && Ctor.prototype === object,
+      result = Array(length),
+      skipIndexes = length > 0;
+
+  while (++index < length) {
+    result[index] = (index + '');
+  }
+  for (var key in object) {
+    if (!(skipIndexes && isIndex(key, length)) &&
+        !(key == 'constructor' && (isProto || !hasOwnProperty.call(object, key)))) {
+      result.push(key);
+    }
+  }
+  return result;
+}
+
+module.exports = keysIn;
+
+},{"lodash.isarguments":101,"lodash.isarray":102}],108:[function(require,module,exports){
+/**
+ * lodash 3.0.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.7.0 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseCopy = require('lodash._basecopy'),
+    keysIn = require('lodash.keysin');
+
+/**
+ * Converts `value` to a plain object flattening inherited enumerable
+ * properties of `value` to own properties of the plain object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to convert.
+ * @returns {Object} Returns the converted plain object.
+ * @example
+ *
+ * function Foo() {
+ *   this.b = 2;
+ * }
+ *
+ * Foo.prototype.c = 3;
+ *
+ * _.assign({ 'a': 1 }, new Foo);
+ * // => { 'a': 1, 'b': 2 }
+ *
+ * _.assign({ 'a': 1 }, _.toPlainObject(new Foo));
+ * // => { 'a': 1, 'b': 2, 'c': 3 }
+ */
+function toPlainObject(value) {
+  return baseCopy(value, keysIn(value));
+}
+
+module.exports = toPlainObject;
+
+},{"lodash._basecopy":109,"lodash.keysin":107}],109:[function(require,module,exports){
+arguments[4][59][0].apply(exports,arguments)
+},{"dup":59}],110:[function(require,module,exports){
+/**
+ * lodash 3.1.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var arrayMap = require('lodash._arraymap'),
+    baseDifference = require('lodash._basedifference'),
+    baseFlatten = require('lodash._baseflatten'),
+    bindCallback = require('lodash._bindcallback'),
+    pickByArray = require('lodash._pickbyarray'),
+    pickByCallback = require('lodash._pickbycallback'),
+    keysIn = require('lodash.keysin'),
+    restParam = require('lodash.restparam');
+
+/**
+ * The opposite of `_.pick`; this method creates an object composed of the
+ * own and inherited enumerable properties of `object` that are not omitted.
+ * Property names may be specified as individual arguments or as arrays of
+ * property names. If `predicate` is provided it is invoked for each property
+ * of `object` omitting the properties `predicate` returns truthy for. The
+ * predicate is bound to `thisArg` and invoked with three arguments:
+ * (value, key, object).
+ *
+ * @static
+ * @memberOf _
+ * @category Object
+ * @param {Object} object The source object.
+ * @param {Function|...(string|string[])} [predicate] The function invoked per
+ *  iteration or property names to omit, specified as individual property
+ *  names or arrays of property names.
+ * @param {*} [thisArg] The `this` binding of `predicate`.
+ * @returns {Object} Returns the new object.
+ * @example
+ *
+ * var object = { 'user': 'fred', 'age': 40 };
+ *
+ * _.omit(object, 'age');
+ * // => { 'user': 'fred' }
+ *
+ * _.omit(object, _.isNumber);
+ * // => { 'user': 'fred' }
+ */
+var omit = restParam(function(object, props) {
+  if (object == null) {
+    return {};
+  }
+  if (typeof props[0] != 'function') {
+    var props = arrayMap(baseFlatten(props), String);
+    return pickByArray(object, baseDifference(keysIn(object), props));
+  }
+  var predicate = bindCallback(props[0], props[1], 3);
+  return pickByCallback(object, function(value, key, object) {
+    return !predicate(value, key, object);
+  });
+});
+
+module.exports = omit;
+
+},{"lodash._arraymap":111,"lodash._basedifference":112,"lodash._baseflatten":117,"lodash._bindcallback":120,"lodash._pickbyarray":121,"lodash._pickbycallback":122,"lodash.keysin":124,"lodash.restparam":127}],111:[function(require,module,exports){
 /**
  * lodash 3.0.0 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
@@ -2430,36 +16024,1251 @@ function arrayMap(array, iteratee) {
 
 module.exports = arrayMap;
 
-},{}],6:[function(require,module,exports){
+},{}],112:[function(require,module,exports){
 /**
- * lodash 3.2.0 (Custom Build) <https://lodash.com/>
+ * lodash 3.0.3 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
  * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
  * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
  * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
  * Available under MIT license <https://lodash.com/license>
  */
-var baseCopy = require('lodash._basecopy'),
-    keys = require('lodash.keys');
+var baseIndexOf = require('lodash._baseindexof'),
+    cacheIndexOf = require('lodash._cacheindexof'),
+    createCache = require('lodash._createcache');
+
+/** Used as the size to enable large array optimizations. */
+var LARGE_ARRAY_SIZE = 200;
 
 /**
- * The base implementation of `_.assign` without support for argument juggling,
- * multiple sources, and `customizer` functions.
+ * The base implementation of `_.difference` which accepts a single array
+ * of values to exclude.
  *
  * @private
- * @param {Object} object The destination object.
- * @param {Object} source The source object.
- * @returns {Object} Returns `object`.
+ * @param {Array} array The array to inspect.
+ * @param {Array} values The values to exclude.
+ * @returns {Array} Returns the new array of filtered values.
  */
-function baseAssign(object, source) {
-  return source == null
-    ? object
-    : baseCopy(source, keys(source), object);
+function baseDifference(array, values) {
+  var length = array ? array.length : 0,
+      result = [];
+
+  if (!length) {
+    return result;
+  }
+  var index = -1,
+      indexOf = baseIndexOf,
+      isCommon = true,
+      cache = (isCommon && values.length >= LARGE_ARRAY_SIZE) ? createCache(values) : null,
+      valuesLength = values.length;
+
+  if (cache) {
+    indexOf = cacheIndexOf;
+    isCommon = false;
+    values = cache;
+  }
+  outer:
+  while (++index < length) {
+    var value = array[index];
+
+    if (isCommon && value === value) {
+      var valuesIndex = valuesLength;
+      while (valuesIndex--) {
+        if (values[valuesIndex] === value) {
+          continue outer;
+        }
+      }
+      result.push(value);
+    }
+    else if (indexOf(values, value, 0) < 0) {
+      result.push(value);
+    }
+  }
+  return result;
 }
 
-module.exports = baseAssign;
+module.exports = baseDifference;
 
-},{"lodash._basecopy":9,"lodash.keys":35}],7:[function(require,module,exports){
+},{"lodash._baseindexof":113,"lodash._cacheindexof":114,"lodash._createcache":115}],113:[function(require,module,exports){
+arguments[4][88][0].apply(exports,arguments)
+},{"dup":88}],114:[function(require,module,exports){
+arguments[4][89][0].apply(exports,arguments)
+},{"dup":89}],115:[function(require,module,exports){
+arguments[4][90][0].apply(exports,arguments)
+},{"dup":90,"lodash._getnative":116}],116:[function(require,module,exports){
+arguments[4][65][0].apply(exports,arguments)
+},{"dup":65}],117:[function(require,module,exports){
+arguments[4][83][0].apply(exports,arguments)
+},{"dup":83,"lodash.isarguments":118,"lodash.isarray":119}],118:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],119:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],120:[function(require,module,exports){
+arguments[4][61][0].apply(exports,arguments)
+},{"dup":61}],121:[function(require,module,exports){
+/**
+ * lodash 3.0.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/**
+ * A specialized version of `_.pick` which picks `object` properties specified
+ * by `props`.
+ *
+ * @private
+ * @param {Object} object The source object.
+ * @param {string[]} props The property names to pick.
+ * @returns {Object} Returns the new object.
+ */
+function pickByArray(object, props) {
+  object = toObject(object);
+
+  var index = -1,
+      length = props.length,
+      result = {};
+
+  while (++index < length) {
+    var key = props[index];
+    if (key in object) {
+      result[key] = object[key];
+    }
+  }
+  return result;
+}
+
+/**
+ * Converts `value` to an object if it's not one.
+ *
+ * @private
+ * @param {*} value The value to process.
+ * @returns {Object} Returns the object.
+ */
+function toObject(value) {
+  return isObject(value) ? value : Object(value);
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(1);
+ * // => false
+ */
+function isObject(value) {
+  // Avoid a V8 JIT bug in Chrome 19-20.
+  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+module.exports = pickByArray;
+
+},{}],122:[function(require,module,exports){
+/**
+ * lodash 3.0.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.7.0 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseFor = require('lodash._basefor'),
+    keysIn = require('lodash.keysin');
+
+/**
+ * The base implementation of `_.forIn` without support for callback
+ * shorthands and `this` binding.
+ *
+ * @private
+ * @param {Object} object The object to iterate over.
+ * @param {Function} iteratee The function invoked per iteration.
+ * @returns {Object} Returns `object`.
+ */
+function baseForIn(object, iteratee) {
+  return baseFor(object, iteratee, keysIn);
+}
+
+/**
+ * A specialized version of `_.pick` that picks `object` properties `predicate`
+ * returns truthy for.
+ *
+ * @private
+ * @param {Object} object The source object.
+ * @param {Function} predicate The function invoked per iteration.
+ * @returns {Object} Returns the new object.
+ */
+function pickByCallback(object, predicate) {
+  var result = {};
+  baseForIn(object, function(value, key, object) {
+    if (predicate(value, key, object)) {
+      result[key] = value;
+    }
+  });
+  return result;
+}
+
+module.exports = pickByCallback;
+
+},{"lodash._basefor":123,"lodash.keysin":124}],123:[function(require,module,exports){
+arguments[4][74][0].apply(exports,arguments)
+},{"dup":74}],124:[function(require,module,exports){
+arguments[4][107][0].apply(exports,arguments)
+},{"dup":107,"lodash.isarguments":125,"lodash.isarray":126}],125:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],126:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],127:[function(require,module,exports){
+arguments[4][63][0].apply(exports,arguments)
+},{"dup":63}],128:[function(require,module,exports){
+/**
+ * lodash 3.1.1 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var createWrapper = require('lodash._createwrapper'),
+    replaceHolders = require('lodash._replaceholders'),
+    restParam = require('lodash.restparam');
+
+/** Used to compose bitmasks for wrapper metadata. */
+var PARTIAL_RIGHT_FLAG = 64;
+
+/**
+ * Creates a `_.partial` or `_.partialRight` function.
+ *
+ * @private
+ * @param {boolean} flag The partial bit flag.
+ * @returns {Function} Returns the new partial function.
+ */
+function createPartial(flag) {
+  var partialFunc = restParam(function(func, partials) {
+    var holders = replaceHolders(partials, partialFunc.placeholder);
+    return createWrapper(func, flag, undefined, partials, holders);
+  });
+  return partialFunc;
+}
+
+/**
+ * This method is like `_.partial` except that partially applied arguments
+ * are appended to those provided to the new function.
+ *
+ * The `_.partialRight.placeholder` value, which defaults to `_` in monolithic
+ * builds, may be used as a placeholder for partially applied arguments.
+ *
+ * **Note:** This method does not set the "length" property of partially
+ * applied functions.
+ *
+ * @static
+ * @memberOf _
+ * @category Function
+ * @param {Function} func The function to partially apply arguments to.
+ * @param {...*} [partials] The arguments to be partially applied.
+ * @returns {Function} Returns the new partially applied function.
+ * @example
+ *
+ * var greet = function(greeting, name) {
+ *   return greeting + ' ' + name;
+ * };
+ *
+ * var greetFred = _.partialRight(greet, 'fred');
+ * greetFred('hi');
+ * // => 'hi fred'
+ *
+ * // using placeholders
+ * var sayHelloTo = _.partialRight(greet, 'hello', _);
+ * sayHelloTo('fred');
+ * // => 'hello fred'
+ */
+var partialRight = createPartial(PARTIAL_RIGHT_FLAG);
+
+// Assign default placeholders.
+partialRight.placeholder = {};
+
+module.exports = partialRight;
+
+},{"lodash._createwrapper":129,"lodash._replaceholders":131,"lodash.restparam":132}],129:[function(require,module,exports){
+/**
+ * lodash 3.2.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modularize exports="npm" -o ./`
+ * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var root = require('lodash._root');
+
+/** Used to compose bitmasks for wrapper metadata. */
+var BIND_FLAG = 1,
+    BIND_KEY_FLAG = 2,
+    CURRY_BOUND_FLAG = 4,
+    CURRY_FLAG = 8,
+    CURRY_RIGHT_FLAG = 16,
+    PARTIAL_FLAG = 32,
+    PARTIAL_RIGHT_FLAG = 64,
+    ARY_FLAG = 128,
+    FLIP_FLAG = 512;
+
+/** Used as the `TypeError` message for "Functions" methods. */
+var FUNC_ERROR_TEXT = 'Expected a function';
+
+/** Used as references for various `Number` constants. */
+var INFINITY = 1 / 0,
+    MAX_SAFE_INTEGER = 9007199254740991,
+    MAX_INTEGER = 1.7976931348623157e+308,
+    NAN = 0 / 0;
+
+/** Used as the internal argument placeholder. */
+var PLACEHOLDER = '__lodash_placeholder__';
+
+/** `Object#toString` result references. */
+var funcTag = '[object Function]',
+    genTag = '[object GeneratorFunction]';
+
+/** Used to match leading and trailing whitespace. */
+var reTrim = /^\s+|\s+$/g;
+
+/** Used to detect bad signed hexadecimal string values. */
+var reIsBadHex = /^[-+]0x[0-9a-f]+$/i;
+
+/** Used to detect binary string values. */
+var reIsBinary = /^0b[01]+$/i;
+
+/** Used to detect octal string values. */
+var reIsOctal = /^0o[0-7]+$/i;
+
+/** Used to detect unsigned integer values. */
+var reIsUint = /^(?:0|[1-9]\d*)$/;
+
+/** Built-in method references without a dependency on `root`. */
+var freeParseInt = parseInt;
+
+/**
+ * A faster alternative to `Function#apply`, this function invokes `func`
+ * with the `this` binding of `thisArg` and the arguments of `args`.
+ *
+ * @private
+ * @param {Function} func The function to invoke.
+ * @param {*} thisArg The `this` binding of `func`.
+ * @param {...*} args The arguments to invoke `func` with.
+ * @returns {*} Returns the result of `func`.
+ */
+function apply(func, thisArg, args) {
+  var length = args.length;
+  switch (length) {
+    case 0: return func.call(thisArg);
+    case 1: return func.call(thisArg, args[0]);
+    case 2: return func.call(thisArg, args[0], args[1]);
+    case 3: return func.call(thisArg, args[0], args[1], args[2]);
+  }
+  return func.apply(thisArg, args);
+}
+
+/**
+ * Checks if `value` is a valid array-like index.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
+ * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
+ */
+function isIndex(value, length) {
+  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
+  length = length == null ? MAX_SAFE_INTEGER : length;
+  return value > -1 && value % 1 == 0 && value < length;
+}
+
+/**
+ * Replaces all `placeholder` elements in `array` with an internal placeholder
+ * and returns an array of their indexes.
+ *
+ * @private
+ * @param {Array} array The array to modify.
+ * @param {*} placeholder The placeholder to replace.
+ * @returns {Array} Returns the new array of placeholder indexes.
+ */
+function replaceHolders(array, placeholder) {
+  var index = -1,
+      length = array.length,
+      resIndex = -1,
+      result = [];
+
+  while (++index < length) {
+    if (array[index] === placeholder) {
+      array[index] = PLACEHOLDER;
+      result[++resIndex] = index;
+    }
+  }
+  return result;
+}
+
+/** Used for built-in method references. */
+var objectProto = Object.prototype;
+
+/**
+ * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
+ * of values.
+ */
+var objectToString = objectProto.toString;
+
+/* Built-in method references for those with the same name as other `lodash` methods. */
+var nativeMax = Math.max,
+    nativeMin = Math.min;
+
+/**
+ * The base implementation of `_.create` without support for assigning
+ * properties to the created object.
+ *
+ * @private
+ * @param {Object} prototype The object to inherit from.
+ * @returns {Object} Returns the new object.
+ */
+var baseCreate = (function() {
+  function object() {}
+  return function(prototype) {
+    if (isObject(prototype)) {
+      object.prototype = prototype;
+      var result = new object;
+      object.prototype = undefined;
+    }
+    return result || {};
+  };
+}());
+
+/**
+ * Creates an array that is the composition of partially applied arguments,
+ * placeholders, and provided arguments into a single array of arguments.
+ *
+ * @private
+ * @param {Array|Object} args The provided arguments.
+ * @param {Array} partials The arguments to prepend to those provided.
+ * @param {Array} holders The `partials` placeholder indexes.
+ * @returns {Array} Returns the new array of composed arguments.
+ */
+function composeArgs(args, partials, holders) {
+  var holdersLength = holders.length,
+      argsIndex = -1,
+      argsLength = nativeMax(args.length - holdersLength, 0),
+      leftIndex = -1,
+      leftLength = partials.length,
+      result = Array(leftLength + argsLength);
+
+  while (++leftIndex < leftLength) {
+    result[leftIndex] = partials[leftIndex];
+  }
+  while (++argsIndex < holdersLength) {
+    result[holders[argsIndex]] = args[argsIndex];
+  }
+  while (argsLength--) {
+    result[leftIndex++] = args[argsIndex++];
+  }
+  return result;
+}
+
+/**
+ * This function is like `composeArgs` except that the arguments composition
+ * is tailored for `_.partialRight`.
+ *
+ * @private
+ * @param {Array|Object} args The provided arguments.
+ * @param {Array} partials The arguments to append to those provided.
+ * @param {Array} holders The `partials` placeholder indexes.
+ * @returns {Array} Returns the new array of composed arguments.
+ */
+function composeArgsRight(args, partials, holders) {
+  var holdersIndex = -1,
+      holdersLength = holders.length,
+      argsIndex = -1,
+      argsLength = nativeMax(args.length - holdersLength, 0),
+      rightIndex = -1,
+      rightLength = partials.length,
+      result = Array(argsLength + rightLength);
+
+  while (++argsIndex < argsLength) {
+    result[argsIndex] = args[argsIndex];
+  }
+  var offset = argsIndex;
+  while (++rightIndex < rightLength) {
+    result[offset + rightIndex] = partials[rightIndex];
+  }
+  while (++holdersIndex < holdersLength) {
+    result[offset + holders[holdersIndex]] = args[argsIndex++];
+  }
+  return result;
+}
+
+/**
+ * Copies the values of `source` to `array`.
+ *
+ * @private
+ * @param {Array} source The array to copy values from.
+ * @param {Array} [array=[]] The array to copy values to.
+ * @returns {Array} Returns `array`.
+ */
+function copyArray(source, array) {
+  var index = -1,
+      length = source.length;
+
+  array || (array = Array(length));
+  while (++index < length) {
+    array[index] = source[index];
+  }
+  return array;
+}
+
+/**
+ * Creates a function that wraps `func` to invoke it with the optional `this`
+ * binding of `thisArg`.
+ *
+ * @private
+ * @param {Function} func The function to wrap.
+ * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
+ * @param {*} [thisArg] The `this` binding of `func`.
+ * @returns {Function} Returns the new wrapped function.
+ */
+function createBaseWrapper(func, bitmask, thisArg) {
+  var isBind = bitmask & BIND_FLAG,
+      Ctor = createCtorWrapper(func);
+
+  function wrapper() {
+    var fn = (this && this !== root && this instanceof wrapper) ? Ctor : func;
+    return fn.apply(isBind ? thisArg : this, arguments);
+  }
+  return wrapper;
+}
+
+/**
+ * Creates a function that produces an instance of `Ctor` regardless of
+ * whether it was invoked as part of a `new` expression or by `call` or `apply`.
+ *
+ * @private
+ * @param {Function} Ctor The constructor to wrap.
+ * @returns {Function} Returns the new wrapped function.
+ */
+function createCtorWrapper(Ctor) {
+  return function() {
+    // Use a `switch` statement to work with class constructors.
+    // See http://ecma-international.org/ecma-262/6.0/#sec-ecmascript-function-objects-call-thisargument-argumentslist
+    // for more details.
+    var args = arguments;
+    switch (args.length) {
+      case 0: return new Ctor;
+      case 1: return new Ctor(args[0]);
+      case 2: return new Ctor(args[0], args[1]);
+      case 3: return new Ctor(args[0], args[1], args[2]);
+      case 4: return new Ctor(args[0], args[1], args[2], args[3]);
+      case 5: return new Ctor(args[0], args[1], args[2], args[3], args[4]);
+      case 6: return new Ctor(args[0], args[1], args[2], args[3], args[4], args[5]);
+      case 7: return new Ctor(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
+    }
+    var thisBinding = baseCreate(Ctor.prototype),
+        result = Ctor.apply(thisBinding, args);
+
+    // Mimic the constructor's `return` behavior.
+    // See https://es5.github.io/#x13.2.2 for more details.
+    return isObject(result) ? result : thisBinding;
+  };
+}
+
+/**
+ * Creates a function that wraps `func` to enable currying.
+ *
+ * @private
+ * @param {Function} func The function to wrap.
+ * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
+ * @param {number} arity The arity of `func`.
+ * @returns {Function} Returns the new wrapped function.
+ */
+function createCurryWrapper(func, bitmask, arity) {
+  var Ctor = createCtorWrapper(func);
+
+  function wrapper() {
+    var length = arguments.length,
+        index = length,
+        args = Array(length),
+        fn = (this && this !== root && this instanceof wrapper) ? Ctor : func,
+        placeholder = wrapper.placeholder;
+
+    while (index--) {
+      args[index] = arguments[index];
+    }
+    var holders = (length < 3 && args[0] !== placeholder && args[length - 1] !== placeholder)
+      ? []
+      : replaceHolders(args, placeholder);
+
+    length -= holders.length;
+    return length < arity
+      ? createRecurryWrapper(func, bitmask, createHybridWrapper, placeholder, undefined, args, holders, undefined, undefined, arity - length)
+      : apply(fn, this, args);
+  }
+  return wrapper;
+}
+
+/**
+ * Creates a function that wraps `func` to invoke it with optional `this`
+ * binding of `thisArg`, partial application, and currying.
+ *
+ * @private
+ * @param {Function|string} func The function or method name to wrap.
+ * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
+ * @param {*} [thisArg] The `this` binding of `func`.
+ * @param {Array} [partials] The arguments to prepend to those provided to the new function.
+ * @param {Array} [holders] The `partials` placeholder indexes.
+ * @param {Array} [partialsRight] The arguments to append to those provided to the new function.
+ * @param {Array} [holdersRight] The `partialsRight` placeholder indexes.
+ * @param {Array} [argPos] The argument positions of the new function.
+ * @param {number} [ary] The arity cap of `func`.
+ * @param {number} [arity] The arity of `func`.
+ * @returns {Function} Returns the new wrapped function.
+ */
+function createHybridWrapper(func, bitmask, thisArg, partials, holders, partialsRight, holdersRight, argPos, ary, arity) {
+  var isAry = bitmask & ARY_FLAG,
+      isBind = bitmask & BIND_FLAG,
+      isBindKey = bitmask & BIND_KEY_FLAG,
+      isCurry = bitmask & CURRY_FLAG,
+      isCurryRight = bitmask & CURRY_RIGHT_FLAG,
+      isFlip = bitmask & FLIP_FLAG,
+      Ctor = isBindKey ? undefined : createCtorWrapper(func);
+
+  function wrapper() {
+    var length = arguments.length,
+        index = length,
+        args = Array(length);
+
+    while (index--) {
+      args[index] = arguments[index];
+    }
+    if (partials) {
+      args = composeArgs(args, partials, holders);
+    }
+    if (partialsRight) {
+      args = composeArgsRight(args, partialsRight, holdersRight);
+    }
+    if (isCurry || isCurryRight) {
+      var placeholder = wrapper.placeholder,
+          argsHolders = replaceHolders(args, placeholder);
+
+      length -= argsHolders.length;
+      if (length < arity) {
+        return createRecurryWrapper(func, bitmask, createHybridWrapper, placeholder, thisArg, args, argsHolders, argPos, ary, arity - length);
+      }
+    }
+    var thisBinding = isBind ? thisArg : this,
+        fn = isBindKey ? thisBinding[func] : func;
+
+    if (argPos) {
+      args = reorder(args, argPos);
+    } else if (isFlip && args.length > 1) {
+      args.reverse();
+    }
+    if (isAry && ary < args.length) {
+      args.length = ary;
+    }
+    if (this && this !== root && this instanceof wrapper) {
+      fn = Ctor || createCtorWrapper(fn);
+    }
+    return fn.apply(thisBinding, args);
+  }
+  return wrapper;
+}
+
+/**
+ * Creates a function that wraps `func` to invoke it with the optional `this`
+ * binding of `thisArg` and the `partials` prepended to those provided to
+ * the wrapper.
+ *
+ * @private
+ * @param {Function} func The function to wrap.
+ * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
+ * @param {*} thisArg The `this` binding of `func`.
+ * @param {Array} partials The arguments to prepend to those provided to the new function.
+ * @returns {Function} Returns the new wrapped function.
+ */
+function createPartialWrapper(func, bitmask, thisArg, partials) {
+  var isBind = bitmask & BIND_FLAG,
+      Ctor = createCtorWrapper(func);
+
+  function wrapper() {
+    var argsIndex = -1,
+        argsLength = arguments.length,
+        leftIndex = -1,
+        leftLength = partials.length,
+        args = Array(leftLength + argsLength),
+        fn = (this && this !== root && this instanceof wrapper) ? Ctor : func;
+
+    while (++leftIndex < leftLength) {
+      args[leftIndex] = partials[leftIndex];
+    }
+    while (argsLength--) {
+      args[leftIndex++] = arguments[++argsIndex];
+    }
+    return apply(fn, isBind ? thisArg : this, args);
+  }
+  return wrapper;
+}
+
+/**
+ * Creates a function that wraps `func` to continue currying.
+ *
+ * @private
+ * @param {Function} func The function to wrap.
+ * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
+ * @param {Function} wrapFunc The function to create the `func` wrapper.
+ * @param {*} placeholder The placeholder to replace.
+ * @param {*} [thisArg] The `this` binding of `func`.
+ * @param {Array} [partials] The arguments to prepend to those provided to the new function.
+ * @param {Array} [holders] The `partials` placeholder indexes.
+ * @param {Array} [argPos] The argument positions of the new function.
+ * @param {number} [ary] The arity cap of `func`.
+ * @param {number} [arity] The arity of `func`.
+ * @returns {Function} Returns the new wrapped function.
+ */
+function createRecurryWrapper(func, bitmask, wrapFunc, placeholder, thisArg, partials, holders, argPos, ary, arity) {
+  var isCurry = bitmask & CURRY_FLAG,
+      newArgPos = argPos ? copyArray(argPos) : undefined,
+      newsHolders = isCurry ? holders : undefined,
+      newHoldersRight = isCurry ? undefined : holders,
+      newPartials = isCurry ? partials : undefined,
+      newPartialsRight = isCurry ? undefined : partials;
+
+  bitmask |= (isCurry ? PARTIAL_FLAG : PARTIAL_RIGHT_FLAG);
+  bitmask &= ~(isCurry ? PARTIAL_RIGHT_FLAG : PARTIAL_FLAG);
+
+  if (!(bitmask & CURRY_BOUND_FLAG)) {
+    bitmask &= ~(BIND_FLAG | BIND_KEY_FLAG);
+  }
+  var result = wrapFunc(func, bitmask, thisArg, newPartials, newsHolders, newPartialsRight, newHoldersRight, newArgPos, ary, arity);
+
+  result.placeholder = placeholder;
+  return result;
+}
+
+/**
+ * Creates a function that either curries or invokes `func` with optional
+ * `this` binding and partially applied arguments.
+ *
+ * @private
+ * @param {Function|string} func The function or method name to wrap.
+ * @param {number} bitmask The bitmask of wrapper flags.
+ *  The bitmask may be composed of the following flags:
+ *     1 - `_.bind`
+ *     2 - `_.bindKey`
+ *     4 - `_.curry` or `_.curryRight` of a bound function
+ *     8 - `_.curry`
+ *    16 - `_.curryRight`
+ *    32 - `_.partial`
+ *    64 - `_.partialRight`
+ *   128 - `_.rearg`
+ *   256 - `_.ary`
+ * @param {*} [thisArg] The `this` binding of `func`.
+ * @param {Array} [partials] The arguments to be partially applied.
+ * @param {Array} [holders] The `partials` placeholder indexes.
+ * @param {Array} [argPos] The argument positions of the new function.
+ * @param {number} [ary] The arity cap of `func`.
+ * @param {number} [arity] The arity of `func`.
+ * @returns {Function} Returns the new wrapped function.
+ */
+function createWrapper(func, bitmask, thisArg, partials, holders, argPos, ary, arity) {
+  var isBindKey = bitmask & BIND_KEY_FLAG;
+  if (!isBindKey && typeof func != 'function') {
+    throw new TypeError(FUNC_ERROR_TEXT);
+  }
+  var length = partials ? partials.length : 0;
+  if (!length) {
+    bitmask &= ~(PARTIAL_FLAG | PARTIAL_RIGHT_FLAG);
+    partials = holders = undefined;
+  }
+  ary = ary === undefined ? ary : nativeMax(toInteger(ary), 0);
+  arity = arity === undefined ? arity : toInteger(arity);
+  length -= holders ? holders.length : 0;
+
+  if (bitmask & PARTIAL_RIGHT_FLAG) {
+    var partialsRight = partials,
+        holdersRight = holders;
+
+    partials = holders = undefined;
+  }
+  var newData = [func, bitmask, thisArg, partials, holders, partialsRight, holdersRight, argPos, ary, arity];
+
+  func = newData[0];
+  bitmask = newData[1];
+  thisArg = newData[2];
+  partials = newData[3];
+  holders = newData[4];
+  arity = newData[9] = newData[9] == null
+    ? (isBindKey ? 0 : func.length)
+    : nativeMax(newData[9] - length, 0);
+
+  if (!arity && bitmask & (CURRY_FLAG | CURRY_RIGHT_FLAG)) {
+    bitmask &= ~(CURRY_FLAG | CURRY_RIGHT_FLAG);
+  }
+  if (!bitmask || bitmask == BIND_FLAG) {
+    var result = createBaseWrapper(func, bitmask, thisArg);
+  } else if (bitmask == CURRY_FLAG || bitmask == CURRY_RIGHT_FLAG) {
+    result = createCurryWrapper(func, bitmask, arity);
+  } else if ((bitmask == PARTIAL_FLAG || bitmask == (BIND_FLAG | PARTIAL_FLAG)) && !holders.length) {
+    result = createPartialWrapper(func, bitmask, thisArg, partials);
+  } else {
+    result = createHybridWrapper.apply(undefined, newData);
+  }
+  return result;
+}
+
+/**
+ * Reorder `array` according to the specified indexes where the element at
+ * the first index is assigned as the first element, the element at
+ * the second index is assigned as the second element, and so on.
+ *
+ * @private
+ * @param {Array} array The array to reorder.
+ * @param {Array} indexes The arranged array indexes.
+ * @returns {Array} Returns `array`.
+ */
+function reorder(array, indexes) {
+  var arrLength = array.length,
+      length = nativeMin(indexes.length, arrLength),
+      oldArray = copyArray(array);
+
+  while (length--) {
+    var index = indexes[length];
+    array[length] = isIndex(index, arrLength) ? oldArray[index] : undefined;
+  }
+  return array;
+}
+
+/**
+ * Checks if `value` is classified as a `Function` object.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
+ * @example
+ *
+ * _.isFunction(_);
+ * // => true
+ *
+ * _.isFunction(/abc/);
+ * // => false
+ */
+function isFunction(value) {
+  // The use of `Object#toString` avoids issues with the `typeof` operator
+  // in Safari 8 which returns 'object' for typed array constructors, and
+  // PhantomJS 1.9 which returns 'function' for `NodeList` instances.
+  var tag = isObject(value) ? objectToString.call(value) : '';
+  return tag == funcTag || tag == genTag;
+}
+
+/**
+ * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
+ * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to check.
+ * @returns {boolean} Returns `true` if `value` is an object, else `false`.
+ * @example
+ *
+ * _.isObject({});
+ * // => true
+ *
+ * _.isObject([1, 2, 3]);
+ * // => true
+ *
+ * _.isObject(_.noop);
+ * // => true
+ *
+ * _.isObject(null);
+ * // => false
+ */
+function isObject(value) {
+  var type = typeof value;
+  return !!value && (type == 'object' || type == 'function');
+}
+
+/**
+ * Converts `value` to an integer.
+ *
+ * **Note:** This function is loosely based on [`ToInteger`](http://www.ecma-international.org/ecma-262/6.0/#sec-tointeger).
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to convert.
+ * @returns {number} Returns the converted integer.
+ * @example
+ *
+ * _.toInteger(3);
+ * // => 3
+ *
+ * _.toInteger(Number.MIN_VALUE);
+ * // => 0
+ *
+ * _.toInteger(Infinity);
+ * // => 1.7976931348623157e+308
+ *
+ * _.toInteger('3');
+ * // => 3
+ */
+function toInteger(value) {
+  if (!value) {
+    return value === 0 ? value : 0;
+  }
+  value = toNumber(value);
+  if (value === INFINITY || value === -INFINITY) {
+    var sign = (value < 0 ? -1 : 1);
+    return sign * MAX_INTEGER;
+  }
+  var remainder = value % 1;
+  return value === value ? (remainder ? value - remainder : value) : 0;
+}
+
+/**
+ * Converts `value` to a number.
+ *
+ * @static
+ * @memberOf _
+ * @category Lang
+ * @param {*} value The value to process.
+ * @returns {number} Returns the number.
+ * @example
+ *
+ * _.toNumber(3);
+ * // => 3
+ *
+ * _.toNumber(Number.MIN_VALUE);
+ * // => 5e-324
+ *
+ * _.toNumber(Infinity);
+ * // => Infinity
+ *
+ * _.toNumber('3');
+ * // => 3
+ */
+function toNumber(value) {
+  if (isObject(value)) {
+    var other = isFunction(value.valueOf) ? value.valueOf() : value;
+    value = isObject(other) ? (other + '') : other;
+  }
+  if (typeof value != 'string') {
+    return value === 0 ? value : +value;
+  }
+  value = value.replace(reTrim, '');
+  var isBinary = reIsBinary.test(value);
+  return (isBinary || reIsOctal.test(value))
+    ? freeParseInt(value.slice(2), isBinary ? 2 : 8)
+    : (reIsBadHex.test(value) ? NAN : +value);
+}
+
+module.exports = createWrapper;
+
+},{"lodash._root":130}],130:[function(require,module,exports){
+(function (global){
+/**
+ * lodash 3.0.1 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modularize exports="npm" -o ./`
+ * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** Used to determine if values are of the language type `Object`. */
+var objectTypes = {
+  'function': true,
+  'object': true
+};
+
+/** Detect free variable `exports`. */
+var freeExports = (objectTypes[typeof exports] && exports && !exports.nodeType)
+  ? exports
+  : undefined;
+
+/** Detect free variable `module`. */
+var freeModule = (objectTypes[typeof module] && module && !module.nodeType)
+  ? module
+  : undefined;
+
+/** Detect free variable `global` from Node.js. */
+var freeGlobal = checkGlobal(freeExports && freeModule && typeof global == 'object' && global);
+
+/** Detect free variable `self`. */
+var freeSelf = checkGlobal(objectTypes[typeof self] && self);
+
+/** Detect free variable `window`. */
+var freeWindow = checkGlobal(objectTypes[typeof window] && window);
+
+/** Detect `this` as the global object. */
+var thisGlobal = checkGlobal(objectTypes[typeof this] && this);
+
+/**
+ * Used as a reference to the global object.
+ *
+ * The `this` value is used if it's the global object to avoid Greasemonkey's
+ * restricted `window` object, otherwise the `window` object is used.
+ */
+var root = freeGlobal ||
+  ((freeWindow !== (thisGlobal && thisGlobal.window)) && freeWindow) ||
+    freeSelf || thisGlobal || Function('return this')();
+
+/**
+ * Checks if `value` is a global object.
+ *
+ * @private
+ * @param {*} value The value to check.
+ * @returns {null|Object} Returns `value` if it's a global object, else `null`.
+ */
+function checkGlobal(value) {
+  return (value && value.Object === Object) ? value : null;
+}
+
+module.exports = root;
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],131:[function(require,module,exports){
+/**
+ * lodash 3.0.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.7.0 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+
+/** Used as the internal argument placeholder. */
+var PLACEHOLDER = '__lodash_placeholder__';
+
+/**
+ * Replaces all `placeholder` elements in `array` with an internal placeholder
+ * and returns an array of their indexes.
+ *
+ * @private
+ * @param {Array} array The array to modify.
+ * @param {*} placeholder The placeholder to replace.
+ * @returns {Array} Returns the new array of placeholder indexes.
+ */
+function replaceHolders(array, placeholder) {
+  var index = -1,
+      length = array.length,
+      resIndex = -1,
+      result = [];
+
+  while (++index < length) {
+    if (array[index] === placeholder) {
+      array[index] = PLACEHOLDER;
+      result[++resIndex] = index;
+    }
+  }
+  return result;
+}
+
+module.exports = replaceHolders;
+
+},{}],132:[function(require,module,exports){
+arguments[4][63][0].apply(exports,arguments)
+},{"dup":63}],133:[function(require,module,exports){
+/**
+ * lodash 3.1.0 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseFlatten = require('lodash._baseflatten'),
+    bindCallback = require('lodash._bindcallback'),
+    pickByArray = require('lodash._pickbyarray'),
+    pickByCallback = require('lodash._pickbycallback'),
+    restParam = require('lodash.restparam');
+
+/**
+ * Creates an object composed of the picked `object` properties. Property
+ * names may be specified as individual arguments or as arrays of property
+ * names. If `predicate` is provided it is invoked for each property of `object`
+ * picking the properties `predicate` returns truthy for. The predicate is
+ * bound to `thisArg` and invoked with three arguments: (value, key, object).
+ *
+ * @static
+ * @memberOf _
+ * @category Object
+ * @param {Object} object The source object.
+ * @param {Function|...(string|string[])} [predicate] The function invoked per
+ *  iteration or property names to pick, specified as individual property
+ *  names or arrays of property names.
+ * @param {*} [thisArg] The `this` binding of `predicate`.
+ * @returns {Object} Returns the new object.
+ * @example
+ *
+ * var object = { 'user': 'fred', 'age': 40 };
+ *
+ * _.pick(object, 'user');
+ * // => { 'user': 'fred' }
+ *
+ * _.pick(object, _.isString);
+ * // => { 'user': 'fred' }
+ */
+var pick = restParam(function(object, props) {
+  if (object == null) {
+    return {};
+  }
+  return typeof props[0] == 'function'
+    ? pickByCallback(object, bindCallback(props[0], props[1], 3))
+    : pickByArray(object, baseFlatten(props));
+});
+
+module.exports = pick;
+
+},{"lodash._baseflatten":134,"lodash._bindcallback":137,"lodash._pickbyarray":138,"lodash._pickbycallback":139,"lodash.restparam":144}],134:[function(require,module,exports){
+arguments[4][83][0].apply(exports,arguments)
+},{"dup":83,"lodash.isarguments":135,"lodash.isarray":136}],135:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],136:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],137:[function(require,module,exports){
+arguments[4][61][0].apply(exports,arguments)
+},{"dup":61}],138:[function(require,module,exports){
+arguments[4][121][0].apply(exports,arguments)
+},{"dup":121}],139:[function(require,module,exports){
+arguments[4][122][0].apply(exports,arguments)
+},{"dup":122,"lodash._basefor":140,"lodash.keysin":141}],140:[function(require,module,exports){
+arguments[4][74][0].apply(exports,arguments)
+},{"dup":74}],141:[function(require,module,exports){
+arguments[4][107][0].apply(exports,arguments)
+},{"dup":107,"lodash.isarguments":142,"lodash.isarray":143}],142:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],143:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],144:[function(require,module,exports){
+arguments[4][63][0].apply(exports,arguments)
+},{"dup":63}],145:[function(require,module,exports){
+/**
+ * lodash 3.2.2 (Custom Build) <https://lodash.com/>
+ * Build: `lodash modern modularize exports="npm" -o ./`
+ * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
+ * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
+ * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+ * Available under MIT license <https://lodash.com/license>
+ */
+var baseCallback = require('lodash._basecallback'),
+    baseUniq = require('lodash._baseuniq'),
+    isIterateeCall = require('lodash._isiterateecall');
+
+/**
+ * An implementation of `_.uniq` optimized for sorted arrays without support
+ * for callback shorthands and `this` binding.
+ *
+ * @private
+ * @param {Array} array The array to inspect.
+ * @param {Function} [iteratee] The function invoked per iteration.
+ * @returns {Array} Returns the new duplicate-value-free array.
+ */
+function sortedUniq(array, iteratee) {
+  var seen,
+      index = -1,
+      length = array.length,
+      resIndex = -1,
+      result = [];
+
+  while (++index < length) {
+    var value = array[index],
+        computed = iteratee ? iteratee(value, index, array) : value;
+
+    if (!index || seen !== computed) {
+      seen = computed;
+      result[++resIndex] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Creates a duplicate-free version of an array, using
+ * [`SameValueZero`](http://ecma-international.org/ecma-262/6.0/#sec-samevaluezero)
+ * for equality comparisons, in which only the first occurence of each element
+ * is kept. Providing `true` for `isSorted` performs a faster search algorithm
+ * for sorted arrays. If an iteratee function is provided it is invoked for
+ * each element in the array to generate the criterion by which uniqueness
+ * is computed. The `iteratee` is bound to `thisArg` and invoked with three
+ * arguments: (value, index, array).
+ *
+ * If a property name is provided for `iteratee` the created `_.property`
+ * style callback returns the property value of the given element.
+ *
+ * If a value is also provided for `thisArg` the created `_.matchesProperty`
+ * style callback returns `true` for elements that have a matching property
+ * value, else `false`.
+ *
+ * If an object is provided for `iteratee` the created `_.matches` style
+ * callback returns `true` for elements that have the properties of the given
+ * object, else `false`.
+ *
+ * @static
+ * @memberOf _
+ * @alias unique
+ * @category Array
+ * @param {Array} array The array to inspect.
+ * @param {boolean} [isSorted] Specify the array is sorted.
+ * @param {Function|Object|string} [iteratee] The function invoked per iteration.
+ * @param {*} [thisArg] The `this` binding of `iteratee`.
+ * @returns {Array} Returns the new duplicate-value-free array.
+ * @example
+ *
+ * _.uniq([2, 1, 2]);
+ * // => [2, 1]
+ *
+ * // using `isSorted`
+ * _.uniq([1, 1, 2], true);
+ * // => [1, 2]
+ *
+ * // using an iteratee function
+ * _.uniq([1, 2.5, 1.5, 2], function(n) {
+ *   return this.floor(n);
+ * }, Math);
+ * // => [1, 2.5]
+ *
+ * // using the `_.property` callback shorthand
+ * _.uniq([{ 'x': 1 }, { 'x': 2 }, { 'x': 1 }], 'x');
+ * // => [{ 'x': 1 }, { 'x': 2 }]
+ */
+function uniq(array, isSorted, iteratee, thisArg) {
+  var length = array ? array.length : 0;
+  if (!length) {
+    return [];
+  }
+  if (isSorted != null && typeof isSorted != 'boolean') {
+    thisArg = iteratee;
+    iteratee = isIterateeCall(array, isSorted, thisArg) ? undefined : isSorted;
+    isSorted = false;
+  }
+  iteratee = iteratee == null ? iteratee : baseCallback(iteratee, thisArg, 3);
+  return (isSorted)
+    ? sortedUniq(array, iteratee)
+    : baseUniq(array, iteratee);
+}
+
+module.exports = uniq;
+
+},{"lodash._basecallback":146,"lodash._baseuniq":155,"lodash._isiterateecall":160}],146:[function(require,module,exports){
 /**
  * lodash 3.3.1 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
@@ -2883,623 +17692,7 @@ function property(path) {
 
 module.exports = baseCallback;
 
-},{"lodash._baseisequal":14,"lodash._bindcallback":16,"lodash.isarray":32,"lodash.pairs":39}],8:[function(require,module,exports){
-(function (global){
-/**
- * lodash 3.3.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var arrayCopy = require('lodash._arraycopy'),
-    arrayEach = require('lodash._arrayeach'),
-    baseAssign = require('lodash._baseassign'),
-    baseFor = require('lodash._basefor'),
-    isArray = require('lodash.isarray'),
-    keys = require('lodash.keys');
-
-/** `Object#toString` result references. */
-var argsTag = '[object Arguments]',
-    arrayTag = '[object Array]',
-    boolTag = '[object Boolean]',
-    dateTag = '[object Date]',
-    errorTag = '[object Error]',
-    funcTag = '[object Function]',
-    mapTag = '[object Map]',
-    numberTag = '[object Number]',
-    objectTag = '[object Object]',
-    regexpTag = '[object RegExp]',
-    setTag = '[object Set]',
-    stringTag = '[object String]',
-    weakMapTag = '[object WeakMap]';
-
-var arrayBufferTag = '[object ArrayBuffer]',
-    float32Tag = '[object Float32Array]',
-    float64Tag = '[object Float64Array]',
-    int8Tag = '[object Int8Array]',
-    int16Tag = '[object Int16Array]',
-    int32Tag = '[object Int32Array]',
-    uint8Tag = '[object Uint8Array]',
-    uint8ClampedTag = '[object Uint8ClampedArray]',
-    uint16Tag = '[object Uint16Array]',
-    uint32Tag = '[object Uint32Array]';
-
-/** Used to match `RegExp` flags from their coerced string values. */
-var reFlags = /\w*$/;
-
-/** Used to identify `toStringTag` values supported by `_.clone`. */
-var cloneableTags = {};
-cloneableTags[argsTag] = cloneableTags[arrayTag] =
-cloneableTags[arrayBufferTag] = cloneableTags[boolTag] =
-cloneableTags[dateTag] = cloneableTags[float32Tag] =
-cloneableTags[float64Tag] = cloneableTags[int8Tag] =
-cloneableTags[int16Tag] = cloneableTags[int32Tag] =
-cloneableTags[numberTag] = cloneableTags[objectTag] =
-cloneableTags[regexpTag] = cloneableTags[stringTag] =
-cloneableTags[uint8Tag] = cloneableTags[uint8ClampedTag] =
-cloneableTags[uint16Tag] = cloneableTags[uint32Tag] = true;
-cloneableTags[errorTag] = cloneableTags[funcTag] =
-cloneableTags[mapTag] = cloneableTags[setTag] =
-cloneableTags[weakMapTag] = false;
-
-/** Used for native method references. */
-var objectProto = Object.prototype;
-
-/** Used to check objects for own properties. */
-var hasOwnProperty = objectProto.hasOwnProperty;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objToString = objectProto.toString;
-
-/** Native method references. */
-var ArrayBuffer = global.ArrayBuffer,
-    Uint8Array = global.Uint8Array;
-
-/**
- * The base implementation of `_.clone` without support for argument juggling
- * and `this` binding `customizer` functions.
- *
- * @private
- * @param {*} value The value to clone.
- * @param {boolean} [isDeep] Specify a deep clone.
- * @param {Function} [customizer] The function to customize cloning values.
- * @param {string} [key] The key of `value`.
- * @param {Object} [object] The object `value` belongs to.
- * @param {Array} [stackA=[]] Tracks traversed source objects.
- * @param {Array} [stackB=[]] Associates clones with source counterparts.
- * @returns {*} Returns the cloned value.
- */
-function baseClone(value, isDeep, customizer, key, object, stackA, stackB) {
-  var result;
-  if (customizer) {
-    result = object ? customizer(value, key, object) : customizer(value);
-  }
-  if (result !== undefined) {
-    return result;
-  }
-  if (!isObject(value)) {
-    return value;
-  }
-  var isArr = isArray(value);
-  if (isArr) {
-    result = initCloneArray(value);
-    if (!isDeep) {
-      return arrayCopy(value, result);
-    }
-  } else {
-    var tag = objToString.call(value),
-        isFunc = tag == funcTag;
-
-    if (tag == objectTag || tag == argsTag || (isFunc && !object)) {
-      result = initCloneObject(isFunc ? {} : value);
-      if (!isDeep) {
-        return baseAssign(result, value);
-      }
-    } else {
-      return cloneableTags[tag]
-        ? initCloneByTag(value, tag, isDeep)
-        : (object ? value : {});
-    }
-  }
-  // Check for circular references and return its corresponding clone.
-  stackA || (stackA = []);
-  stackB || (stackB = []);
-
-  var length = stackA.length;
-  while (length--) {
-    if (stackA[length] == value) {
-      return stackB[length];
-    }
-  }
-  // Add the source value to the stack of traversed objects and associate it with its clone.
-  stackA.push(value);
-  stackB.push(result);
-
-  // Recursively populate clone (susceptible to call stack limits).
-  (isArr ? arrayEach : baseForOwn)(value, function(subValue, key) {
-    result[key] = baseClone(subValue, isDeep, customizer, key, value, stackA, stackB);
-  });
-  return result;
-}
-
-/**
- * The base implementation of `_.forOwn` without support for callback
- * shorthands and `this` binding.
- *
- * @private
- * @param {Object} object The object to iterate over.
- * @param {Function} iteratee The function invoked per iteration.
- * @returns {Object} Returns `object`.
- */
-function baseForOwn(object, iteratee) {
-  return baseFor(object, iteratee, keys);
-}
-
-/**
- * Creates a clone of the given array buffer.
- *
- * @private
- * @param {ArrayBuffer} buffer The array buffer to clone.
- * @returns {ArrayBuffer} Returns the cloned array buffer.
- */
-function bufferClone(buffer) {
-  var result = new ArrayBuffer(buffer.byteLength),
-      view = new Uint8Array(result);
-
-  view.set(new Uint8Array(buffer));
-  return result;
-}
-
-/**
- * Initializes an array clone.
- *
- * @private
- * @param {Array} array The array to clone.
- * @returns {Array} Returns the initialized clone.
- */
-function initCloneArray(array) {
-  var length = array.length,
-      result = new array.constructor(length);
-
-  // Add array properties assigned by `RegExp#exec`.
-  if (length && typeof array[0] == 'string' && hasOwnProperty.call(array, 'index')) {
-    result.index = array.index;
-    result.input = array.input;
-  }
-  return result;
-}
-
-/**
- * Initializes an object clone.
- *
- * @private
- * @param {Object} object The object to clone.
- * @returns {Object} Returns the initialized clone.
- */
-function initCloneObject(object) {
-  var Ctor = object.constructor;
-  if (!(typeof Ctor == 'function' && Ctor instanceof Ctor)) {
-    Ctor = Object;
-  }
-  return new Ctor;
-}
-
-/**
- * Initializes an object clone based on its `toStringTag`.
- *
- * **Note:** This function only supports cloning values with tags of
- * `Boolean`, `Date`, `Error`, `Number`, `RegExp`, or `String`.
- *
- * @private
- * @param {Object} object The object to clone.
- * @param {string} tag The `toStringTag` of the object to clone.
- * @param {boolean} [isDeep] Specify a deep clone.
- * @returns {Object} Returns the initialized clone.
- */
-function initCloneByTag(object, tag, isDeep) {
-  var Ctor = object.constructor;
-  switch (tag) {
-    case arrayBufferTag:
-      return bufferClone(object);
-
-    case boolTag:
-    case dateTag:
-      return new Ctor(+object);
-
-    case float32Tag: case float64Tag:
-    case int8Tag: case int16Tag: case int32Tag:
-    case uint8Tag: case uint8ClampedTag: case uint16Tag: case uint32Tag:
-      var buffer = object.buffer;
-      return new Ctor(isDeep ? bufferClone(buffer) : buffer, object.byteOffset, object.length);
-
-    case numberTag:
-    case stringTag:
-      return new Ctor(object);
-
-    case regexpTag:
-      var result = new Ctor(object.source, reFlags.exec(object));
-      result.lastIndex = object.lastIndex;
-  }
-  return result;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-module.exports = baseClone;
-
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"lodash._arraycopy":3,"lodash._arrayeach":4,"lodash._baseassign":6,"lodash._basefor":12,"lodash.isarray":32,"lodash.keys":35}],9:[function(require,module,exports){
-/**
- * lodash 3.0.1 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/**
- * Copies properties of `source` to `object`.
- *
- * @private
- * @param {Object} source The object to copy properties from.
- * @param {Array} props The property names to copy.
- * @param {Object} [object={}] The object to copy properties to.
- * @returns {Object} Returns `object`.
- */
-function baseCopy(source, props, object) {
-  object || (object = {});
-
-  var index = -1,
-      length = props.length;
-
-  while (++index < length) {
-    var key = props[index];
-    object[key] = source[key];
-  }
-  return object;
-}
-
-module.exports = baseCopy;
-
-},{}],10:[function(require,module,exports){
-/**
- * lodash 3.0.3 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseIndexOf = require('lodash._baseindexof'),
-    cacheIndexOf = require('lodash._cacheindexof'),
-    createCache = require('lodash._createcache');
-
-/** Used as the size to enable large array optimizations. */
-var LARGE_ARRAY_SIZE = 200;
-
-/**
- * The base implementation of `_.difference` which accepts a single array
- * of values to exclude.
- *
- * @private
- * @param {Array} array The array to inspect.
- * @param {Array} values The values to exclude.
- * @returns {Array} Returns the new array of filtered values.
- */
-function baseDifference(array, values) {
-  var length = array ? array.length : 0,
-      result = [];
-
-  if (!length) {
-    return result;
-  }
-  var index = -1,
-      indexOf = baseIndexOf,
-      isCommon = true,
-      cache = (isCommon && values.length >= LARGE_ARRAY_SIZE) ? createCache(values) : null,
-      valuesLength = values.length;
-
-  if (cache) {
-    indexOf = cacheIndexOf;
-    isCommon = false;
-    values = cache;
-  }
-  outer:
-  while (++index < length) {
-    var value = array[index];
-
-    if (isCommon && value === value) {
-      var valuesIndex = valuesLength;
-      while (valuesIndex--) {
-        if (values[valuesIndex] === value) {
-          continue outer;
-        }
-      }
-      result.push(value);
-    }
-    else if (indexOf(values, value, 0) < 0) {
-      result.push(value);
-    }
-  }
-  return result;
-}
-
-module.exports = baseDifference;
-
-},{"lodash._baseindexof":13,"lodash._cacheindexof":17,"lodash._createcache":19}],11:[function(require,module,exports){
-/**
- * lodash 3.1.4 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var isArguments = require('lodash.isarguments'),
-    isArray = require('lodash.isarray');
-
-/**
- * Checks if `value` is object-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
- */
-function isObjectLike(value) {
-  return !!value && typeof value == 'object';
-}
-
-/**
- * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
- * of an array-like value.
- */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/**
- * Appends the elements of `values` to `array`.
- *
- * @private
- * @param {Array} array The array to modify.
- * @param {Array} values The values to append.
- * @returns {Array} Returns `array`.
- */
-function arrayPush(array, values) {
-  var index = -1,
-      length = values.length,
-      offset = array.length;
-
-  while (++index < length) {
-    array[offset + index] = values[index];
-  }
-  return array;
-}
-
-/**
- * The base implementation of `_.flatten` with added support for restricting
- * flattening and specifying the start index.
- *
- * @private
- * @param {Array} array The array to flatten.
- * @param {boolean} [isDeep] Specify a deep flatten.
- * @param {boolean} [isStrict] Restrict flattening to arrays-like objects.
- * @param {Array} [result=[]] The initial result value.
- * @returns {Array} Returns the new flattened array.
- */
-function baseFlatten(array, isDeep, isStrict, result) {
-  result || (result = []);
-
-  var index = -1,
-      length = array.length;
-
-  while (++index < length) {
-    var value = array[index];
-    if (isObjectLike(value) && isArrayLike(value) &&
-        (isStrict || isArray(value) || isArguments(value))) {
-      if (isDeep) {
-        // Recursively flatten arrays (susceptible to call stack limits).
-        baseFlatten(value, isDeep, isStrict, result);
-      } else {
-        arrayPush(result, value);
-      }
-    } else if (!isStrict) {
-      result[result.length] = value;
-    }
-  }
-  return result;
-}
-
-/**
- * The base implementation of `_.property` without support for deep paths.
- *
- * @private
- * @param {string} key The key of the property to get.
- * @returns {Function} Returns the new function.
- */
-function baseProperty(key) {
-  return function(object) {
-    return object == null ? undefined : object[key];
-  };
-}
-
-/**
- * Gets the "length" property value of `object`.
- *
- * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
- * that affects Safari on at least iOS 8.1-8.3 ARM64.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {*} Returns the "length" value.
- */
-var getLength = baseProperty('length');
-
-/**
- * Checks if `value` is array-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
- */
-function isArrayLike(value) {
-  return value != null && isLength(getLength(value));
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-module.exports = baseFlatten;
-
-},{"lodash.isarguments":31,"lodash.isarray":32}],12:[function(require,module,exports){
-/**
- * lodash 3.0.3 (Custom Build) <https://lodash.com/>
- * Build: `lodash modularize exports="npm" -o ./`
- * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/**
- * The base implementation of `baseForIn` and `baseForOwn` which iterates
- * over `object` properties returned by `keysFunc` invoking `iteratee` for
- * each property. Iteratee functions may exit iteration early by explicitly
- * returning `false`.
- *
- * @private
- * @param {Object} object The object to iterate over.
- * @param {Function} iteratee The function invoked per iteration.
- * @param {Function} keysFunc The function to get the keys of `object`.
- * @returns {Object} Returns `object`.
- */
-var baseFor = createBaseFor();
-
-/**
- * Creates a base function for methods like `_.forIn`.
- *
- * @private
- * @param {boolean} [fromRight] Specify iterating from right to left.
- * @returns {Function} Returns the new base function.
- */
-function createBaseFor(fromRight) {
-  return function(object, iteratee, keysFunc) {
-    var index = -1,
-        iterable = Object(object),
-        props = keysFunc(object),
-        length = props.length;
-
-    while (length--) {
-      var key = props[fromRight ? length : ++index];
-      if (iteratee(iterable[key], key, iterable) === false) {
-        break;
-      }
-    }
-    return object;
-  };
-}
-
-module.exports = baseFor;
-
-},{}],13:[function(require,module,exports){
-/**
- * lodash 3.1.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/**
- * The base implementation of `_.indexOf` without support for binary searches.
- *
- * @private
- * @param {Array} array The array to search.
- * @param {*} value The value to search for.
- * @param {number} fromIndex The index to search from.
- * @returns {number} Returns the index of the matched value, else `-1`.
- */
-function baseIndexOf(array, value, fromIndex) {
-  if (value !== value) {
-    return indexOfNaN(array, fromIndex);
-  }
-  var index = fromIndex - 1,
-      length = array.length;
-
-  while (++index < length) {
-    if (array[index] === value) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-/**
- * Gets the index at which the first occurrence of `NaN` is found in `array`.
- * If `fromRight` is provided elements of `array` are iterated from right to left.
- *
- * @private
- * @param {Array} array The array to search.
- * @param {number} fromIndex The index to search from.
- * @param {boolean} [fromRight] Specify iterating from right to left.
- * @returns {number} Returns the index of the matched `NaN`, else `-1`.
- */
-function indexOfNaN(array, fromIndex, fromRight) {
-  var length = array.length,
-      index = fromIndex + (fromRight ? 0 : -1);
-
-  while ((fromRight ? index-- : ++index < length)) {
-    var other = array[index];
-    if (other !== other) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-module.exports = baseIndexOf;
-
-},{}],14:[function(require,module,exports){
+},{"lodash._baseisequal":147,"lodash._bindcallback":151,"lodash.isarray":161,"lodash.pairs":152}],147:[function(require,module,exports){
 /**
  * lodash 3.0.7 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
@@ -3843,3622 +18036,15 @@ function isObject(value) {
 
 module.exports = baseIsEqual;
 
-},{"lodash.isarray":32,"lodash.istypedarray":34,"lodash.keys":35}],15:[function(require,module,exports){
-/**
- * lodash 3.0.3 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseIndexOf = require('lodash._baseindexof'),
-    cacheIndexOf = require('lodash._cacheindexof'),
-    createCache = require('lodash._createcache');
-
-/** Used as the size to enable large array optimizations. */
-var LARGE_ARRAY_SIZE = 200;
-
-/**
- * The base implementation of `_.uniq` without support for callback shorthands
- * and `this` binding.
- *
- * @private
- * @param {Array} array The array to inspect.
- * @param {Function} [iteratee] The function invoked per iteration.
- * @returns {Array} Returns the new duplicate-value-free array.
- */
-function baseUniq(array, iteratee) {
-  var index = -1,
-      indexOf = baseIndexOf,
-      length = array.length,
-      isCommon = true,
-      isLarge = isCommon && length >= LARGE_ARRAY_SIZE,
-      seen = isLarge ? createCache() : null,
-      result = [];
-
-  if (seen) {
-    indexOf = cacheIndexOf;
-    isCommon = false;
-  } else {
-    isLarge = false;
-    seen = iteratee ? [] : result;
-  }
-  outer:
-  while (++index < length) {
-    var value = array[index],
-        computed = iteratee ? iteratee(value, index, array) : value;
-
-    if (isCommon && value === value) {
-      var seenIndex = seen.length;
-      while (seenIndex--) {
-        if (seen[seenIndex] === computed) {
-          continue outer;
-        }
-      }
-      if (iteratee) {
-        seen.push(computed);
-      }
-      result.push(value);
-    }
-    else if (indexOf(seen, computed, 0) < 0) {
-      if (iteratee || isLarge) {
-        seen.push(computed);
-      }
-      result.push(value);
-    }
-  }
-  return result;
-}
-
-module.exports = baseUniq;
-
-},{"lodash._baseindexof":13,"lodash._cacheindexof":17,"lodash._createcache":19}],16:[function(require,module,exports){
-/**
- * lodash 3.0.1 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/**
- * A specialized version of `baseCallback` which only supports `this` binding
- * and specifying the number of arguments to provide to `func`.
- *
- * @private
- * @param {Function} func The function to bind.
- * @param {*} thisArg The `this` binding of `func`.
- * @param {number} [argCount] The number of arguments to provide to `func`.
- * @returns {Function} Returns the callback.
- */
-function bindCallback(func, thisArg, argCount) {
-  if (typeof func != 'function') {
-    return identity;
-  }
-  if (thisArg === undefined) {
-    return func;
-  }
-  switch (argCount) {
-    case 1: return function(value) {
-      return func.call(thisArg, value);
-    };
-    case 3: return function(value, index, collection) {
-      return func.call(thisArg, value, index, collection);
-    };
-    case 4: return function(accumulator, value, index, collection) {
-      return func.call(thisArg, accumulator, value, index, collection);
-    };
-    case 5: return function(value, other, key, object, source) {
-      return func.call(thisArg, value, other, key, object, source);
-    };
-  }
-  return function() {
-    return func.apply(thisArg, arguments);
-  };
-}
-
-/**
- * This method returns the first argument provided to it.
- *
- * @static
- * @memberOf _
- * @category Utility
- * @param {*} value Any value.
- * @returns {*} Returns `value`.
- * @example
- *
- * var object = { 'user': 'fred' };
- *
- * _.identity(object) === object;
- * // => true
- */
-function identity(value) {
-  return value;
-}
-
-module.exports = bindCallback;
-
-},{}],17:[function(require,module,exports){
-/**
- * lodash 3.0.2 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/**
- * Checks if `value` is in `cache` mimicking the return signature of
- * `_.indexOf` by returning `0` if the value is found, else `-1`.
- *
- * @private
- * @param {Object} cache The cache to search.
- * @param {*} value The value to search for.
- * @returns {number} Returns `0` if `value` is found, else `-1`.
- */
-function cacheIndexOf(cache, value) {
-  var data = cache.data,
-      result = (typeof value == 'string' || isObject(value)) ? data.set.has(value) : data.hash[value];
-
-  return result ? 0 : -1;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-module.exports = cacheIndexOf;
-
-},{}],18:[function(require,module,exports){
-/**
- * lodash 3.1.1 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var bindCallback = require('lodash._bindcallback'),
-    isIterateeCall = require('lodash._isiterateecall'),
-    restParam = require('lodash.restparam');
-
-/**
- * Creates a function that assigns properties of source object(s) to a given
- * destination object.
- *
- * **Note:** This function is used to create `_.assign`, `_.defaults`, and `_.merge`.
- *
- * @private
- * @param {Function} assigner The function to assign values.
- * @returns {Function} Returns the new assigner function.
- */
-function createAssigner(assigner) {
-  return restParam(function(object, sources) {
-    var index = -1,
-        length = object == null ? 0 : sources.length,
-        customizer = length > 2 ? sources[length - 2] : undefined,
-        guard = length > 2 ? sources[2] : undefined,
-        thisArg = length > 1 ? sources[length - 1] : undefined;
-
-    if (typeof customizer == 'function') {
-      customizer = bindCallback(customizer, thisArg, 5);
-      length -= 2;
-    } else {
-      customizer = typeof thisArg == 'function' ? thisArg : undefined;
-      length -= (customizer ? 1 : 0);
-    }
-    if (guard && isIterateeCall(sources[0], sources[1], guard)) {
-      customizer = length < 3 ? undefined : customizer;
-      length = 1;
-    }
-    while (++index < length) {
-      var source = sources[index];
-      if (source) {
-        assigner(object, source, customizer);
-      }
-    }
-    return object;
-  });
-}
-
-module.exports = createAssigner;
-
-},{"lodash._bindcallback":16,"lodash._isiterateecall":22,"lodash.restparam":42}],19:[function(require,module,exports){
-(function (global){
-/**
- * lodash 3.1.2 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var getNative = require('lodash._getnative');
-
-/** Native method references. */
-var Set = getNative(global, 'Set');
-
-/* Native method references for those with the same name as other `lodash` methods. */
-var nativeCreate = getNative(Object, 'create');
-
-/**
- *
- * Creates a cache object to store unique values.
- *
- * @private
- * @param {Array} [values] The values to cache.
- */
-function SetCache(values) {
-  var length = values ? values.length : 0;
-
-  this.data = { 'hash': nativeCreate(null), 'set': new Set };
-  while (length--) {
-    this.push(values[length]);
-  }
-}
-
-/**
- * Adds `value` to the cache.
- *
- * @private
- * @name push
- * @memberOf SetCache
- * @param {*} value The value to cache.
- */
-function cachePush(value) {
-  var data = this.data;
-  if (typeof value == 'string' || isObject(value)) {
-    data.set.add(value);
-  } else {
-    data.hash[value] = true;
-  }
-}
-
-/**
- * Creates a `Set` cache object to optimize linear searches of large arrays.
- *
- * @private
- * @param {Array} [values] The values to cache.
- * @returns {null|Object} Returns the new cache object if `Set` is supported, else `null`.
- */
-function createCache(values) {
-  return (nativeCreate && Set) ? new SetCache(values) : null;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-// Add functions to the `Set` cache.
-SetCache.prototype.push = cachePush;
-
-module.exports = createCache;
-
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"lodash._getnative":21}],20:[function(require,module,exports){
-(function (global){
-/**
- * lodash 3.1.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modularize exports="npm" -o ./`
- * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** Used to compose bitmasks for wrapper metadata. */
-var BIND_FLAG = 1,
-    BIND_KEY_FLAG = 2,
-    CURRY_BOUND_FLAG = 4,
-    CURRY_FLAG = 8,
-    CURRY_RIGHT_FLAG = 16,
-    PARTIAL_FLAG = 32,
-    PARTIAL_RIGHT_FLAG = 64,
-    ARY_FLAG = 128,
-    FLIP_FLAG = 512;
-
-/** Used as the `TypeError` message for "Functions" methods. */
-var FUNC_ERROR_TEXT = 'Expected a function';
-
-/** Used as references for various `Number` constants. */
-var INFINITY = 1 / 0,
-    MAX_SAFE_INTEGER = 9007199254740991,
-    MAX_INTEGER = 1.7976931348623157e+308,
-    NAN = 0 / 0;
-
-/** Used as the internal argument placeholder. */
-var PLACEHOLDER = '__lodash_placeholder__';
-
-/** `Object#toString` result references. */
-var funcTag = '[object Function]',
-    genTag = '[object GeneratorFunction]';
-
-/** Used to match leading and trailing whitespace. */
-var reTrim = /^\s+|\s+$/g;
-
-/** Used to detect bad signed hexadecimal string values. */
-var reIsBadHex = /^[-+]0x[0-9a-f]+$/i;
-
-/** Used to detect binary string values. */
-var reIsBinary = /^0b[01]+$/i;
-
-/** Used to detect octal string values. */
-var reIsOctal = /^0o[0-7]+$/i;
-
-/** Used to detect unsigned integer values. */
-var reIsUint = /^(?:0|[1-9]\d*)$/;
-
-/** Built-in method references without a dependency on `global`. */
-var freeParseInt = parseInt;
-
-/**
- * A faster alternative to `Function#apply`, this function invokes `func`
- * with the `this` binding of `thisArg` and the arguments of `args`.
- *
- * @private
- * @param {Function} func The function to invoke.
- * @param {*} thisArg The `this` binding of `func`.
- * @param {...*} [args] The arguments to invoke `func` with.
- * @returns {*} Returns the result of `func`.
- */
-function apply(func, thisArg, args) {
-  var length = args ? args.length : 0;
-  switch (length) {
-    case 0: return func.call(thisArg);
-    case 1: return func.call(thisArg, args[0]);
-    case 2: return func.call(thisArg, args[0], args[1]);
-    case 3: return func.call(thisArg, args[0], args[1], args[2]);
-  }
-  return func.apply(thisArg, args);
-}
-
-/**
- * Checks if `value` is a valid array-like index.
- *
- * @private
- * @param {*} value The value to check.
- * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
- * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
- */
-function isIndex(value, length) {
-  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
-  length = length == null ? MAX_SAFE_INTEGER : length;
-  return value > -1 && value % 1 == 0 && value < length;
-}
-
-/**
- * Replaces all `placeholder` elements in `array` with an internal placeholder
- * and returns an array of their indexes.
- *
- * @private
- * @param {Array} array The array to modify.
- * @param {*} placeholder The placeholder to replace.
- * @returns {Array} Returns the new array of placeholder indexes.
- */
-function replaceHolders(array, placeholder) {
-  var index = -1,
-      length = array.length,
-      resIndex = -1,
-      result = [];
-
-  while (++index < length) {
-    if (array[index] === placeholder) {
-      array[index] = PLACEHOLDER;
-      result[++resIndex] = index;
-    }
-  }
-  return result;
-}
-
-/** Used for built-in method references. */
-var objectProto = global.Object.prototype;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objectToString = objectProto.toString;
-
-/* Built-in method references for those with the same name as other `lodash` methods. */
-var nativeMax = Math.max,
-    nativeMin = Math.min;
-
-/**
- * The base implementation of `_.create` without support for assigning
- * properties to the created object.
- *
- * @private
- * @param {Object} prototype The object to inherit from.
- * @returns {Object} Returns the new object.
- */
-var baseCreate = (function() {
-  function object() {}
-  return function(prototype) {
-    if (isObject(prototype)) {
-      object.prototype = prototype;
-      var result = new object;
-      object.prototype = undefined;
-    }
-    return result || {};
-  };
-}());
-
-/**
- * Creates an array that is the composition of partially applied arguments,
- * placeholders, and provided arguments into a single array of arguments.
- *
- * @private
- * @param {Array|Object} args The provided arguments.
- * @param {Array} partials The arguments to prepend to those provided.
- * @param {Array} holders The `partials` placeholder indexes.
- * @returns {Array} Returns the new array of composed arguments.
- */
-function composeArgs(args, partials, holders) {
-  var holdersLength = holders.length,
-      argsIndex = -1,
-      argsLength = nativeMax(args.length - holdersLength, 0),
-      leftIndex = -1,
-      leftLength = partials.length,
-      result = Array(leftLength + argsLength);
-
-  while (++leftIndex < leftLength) {
-    result[leftIndex] = partials[leftIndex];
-  }
-  while (++argsIndex < holdersLength) {
-    result[holders[argsIndex]] = args[argsIndex];
-  }
-  while (argsLength--) {
-    result[leftIndex++] = args[argsIndex++];
-  }
-  return result;
-}
-
-/**
- * This function is like `composeArgs` except that the arguments composition
- * is tailored for `_.partialRight`.
- *
- * @private
- * @param {Array|Object} args The provided arguments.
- * @param {Array} partials The arguments to append to those provided.
- * @param {Array} holders The `partials` placeholder indexes.
- * @returns {Array} Returns the new array of composed arguments.
- */
-function composeArgsRight(args, partials, holders) {
-  var holdersIndex = -1,
-      holdersLength = holders.length,
-      argsIndex = -1,
-      argsLength = nativeMax(args.length - holdersLength, 0),
-      rightIndex = -1,
-      rightLength = partials.length,
-      result = Array(argsLength + rightLength);
-
-  while (++argsIndex < argsLength) {
-    result[argsIndex] = args[argsIndex];
-  }
-  var offset = argsIndex;
-  while (++rightIndex < rightLength) {
-    result[offset + rightIndex] = partials[rightIndex];
-  }
-  while (++holdersIndex < holdersLength) {
-    result[offset + holders[holdersIndex]] = args[argsIndex++];
-  }
-  return result;
-}
-
-/**
- * Copies the values of `source` to `array`.
- *
- * @private
- * @param {Array} source The array to copy values from.
- * @param {Array} [array=[]] The array to copy values to.
- * @returns {Array} Returns `array`.
- */
-function copyArray(source, array) {
-  var index = -1,
-      length = source.length;
-
-  array || (array = Array(length));
-  while (++index < length) {
-    array[index] = source[index];
-  }
-  return array;
-}
-
-/**
- * Creates a function that wraps `func` to invoke it with the optional `this`
- * binding of `thisArg`.
- *
- * @private
- * @param {Function} func The function to wrap.
- * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
- * @param {*} [thisArg] The `this` binding of `func`.
- * @returns {Function} Returns the new wrapped function.
- */
-function createBaseWrapper(func, bitmask, thisArg) {
-  var isBind = bitmask & BIND_FLAG,
-      Ctor = createCtorWrapper(func);
-
-  function wrapper() {
-    var fn = (this && this !== global && this instanceof wrapper) ? Ctor : func;
-    return fn.apply(isBind ? thisArg : this, arguments);
-  }
-  return wrapper;
-}
-
-/**
- * Creates a function that produces an instance of `Ctor` regardless of
- * whether it was invoked as part of a `new` expression or by `call` or `apply`.
- *
- * @private
- * @param {Function} Ctor The constructor to wrap.
- * @returns {Function} Returns the new wrapped function.
- */
-function createCtorWrapper(Ctor) {
-  return function() {
-    // Use a `switch` statement to work with class constructors.
-    // See http://ecma-international.org/ecma-262/6.0/#sec-ecmascript-function-objects-call-thisargument-argumentslist
-    // for more details.
-    var args = arguments;
-    switch (args.length) {
-      case 0: return new Ctor;
-      case 1: return new Ctor(args[0]);
-      case 2: return new Ctor(args[0], args[1]);
-      case 3: return new Ctor(args[0], args[1], args[2]);
-      case 4: return new Ctor(args[0], args[1], args[2], args[3]);
-      case 5: return new Ctor(args[0], args[1], args[2], args[3], args[4]);
-      case 6: return new Ctor(args[0], args[1], args[2], args[3], args[4], args[5]);
-      case 7: return new Ctor(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
-    }
-    var thisBinding = baseCreate(Ctor.prototype),
-        result = Ctor.apply(thisBinding, args);
-
-    // Mimic the constructor's `return` behavior.
-    // See https://es5.github.io/#x13.2.2 for more details.
-    return isObject(result) ? result : thisBinding;
-  };
-}
-
-/**
- * Creates a function that wraps `func` to enable currying.
- *
- * @private
- * @param {Function} func The function to wrap.
- * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
- * @param {number} arity The arity of `func`.
- * @returns {Function} Returns the new wrapped function.
- */
-function createCurryWrapper(func, bitmask, arity) {
-  var Ctor = createCtorWrapper(func);
-
-  function wrapper() {
-    var length = arguments.length,
-        index = length,
-        args = Array(length),
-        fn = (this && this !== global && this instanceof wrapper) ? Ctor : func,
-        placeholder = wrapper.placeholder;
-
-    while (index--) {
-      args[index] = arguments[index];
-    }
-    var holders = (length < 3 && args[0] !== placeholder && args[length - 1] !== placeholder)
-      ? []
-      : replaceHolders(args, placeholder);
-
-    length -= holders.length;
-    return length < arity
-      ? createRecurryWrapper(func, bitmask, createHybridWrapper, placeholder, undefined, args, holders, undefined, undefined, arity - length)
-      : apply(fn, this, args);
-  }
-  return wrapper;
-}
-
-/**
- * Creates a function that wraps `func` to invoke it with optional `this`
- * binding of `thisArg`, partial application, and currying.
- *
- * @private
- * @param {Function|string} func The function or method name to wrap.
- * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
- * @param {*} [thisArg] The `this` binding of `func`.
- * @param {Array} [partials] The arguments to prepend to those provided to the new function.
- * @param {Array} [holders] The `partials` placeholder indexes.
- * @param {Array} [partialsRight] The arguments to append to those provided to the new function.
- * @param {Array} [holdersRight] The `partialsRight` placeholder indexes.
- * @param {Array} [argPos] The argument positions of the new function.
- * @param {number} [ary] The arity cap of `func`.
- * @param {number} [arity] The arity of `func`.
- * @returns {Function} Returns the new wrapped function.
- */
-function createHybridWrapper(func, bitmask, thisArg, partials, holders, partialsRight, holdersRight, argPos, ary, arity) {
-  var isAry = bitmask & ARY_FLAG,
-      isBind = bitmask & BIND_FLAG,
-      isBindKey = bitmask & BIND_KEY_FLAG,
-      isCurry = bitmask & CURRY_FLAG,
-      isCurryRight = bitmask & CURRY_RIGHT_FLAG,
-      isFlip = bitmask & FLIP_FLAG,
-      Ctor = isBindKey ? undefined : createCtorWrapper(func);
-
-  function wrapper() {
-    var length = arguments.length,
-        index = length,
-        args = Array(length);
-
-    while (index--) {
-      args[index] = arguments[index];
-    }
-    if (partials) {
-      args = composeArgs(args, partials, holders);
-    }
-    if (partialsRight) {
-      args = composeArgsRight(args, partialsRight, holdersRight);
-    }
-    if (isCurry || isCurryRight) {
-      var placeholder = wrapper.placeholder,
-          argsHolders = replaceHolders(args, placeholder);
-
-      length -= argsHolders.length;
-      if (length < arity) {
-        return createRecurryWrapper(func, bitmask, createHybridWrapper, placeholder, thisArg, args, argsHolders, argPos, ary, arity - length);
-      }
-    }
-    var thisBinding = isBind ? thisArg : this,
-        fn = isBindKey ? thisBinding[func] : func;
-
-    if (argPos) {
-      args = reorder(args, argPos);
-    } else if (isFlip && args.length > 1) {
-      args.reverse();
-    }
-    if (isAry && ary < args.length) {
-      args.length = ary;
-    }
-    if (this && this !== global && this instanceof wrapper) {
-      fn = Ctor || createCtorWrapper(fn);
-    }
-    return fn.apply(thisBinding, args);
-  }
-  return wrapper;
-}
-
-/**
- * Creates a function that wraps `func` to invoke it with the optional `this`
- * binding of `thisArg` and the `partials` prepended to those provided to
- * the wrapper.
- *
- * @private
- * @param {Function} func The function to wrap.
- * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
- * @param {*} thisArg The `this` binding of `func`.
- * @param {Array} partials The arguments to prepend to those provided to the new function.
- * @returns {Function} Returns the new wrapped function.
- */
-function createPartialWrapper(func, bitmask, thisArg, partials) {
-  var isBind = bitmask & BIND_FLAG,
-      Ctor = createCtorWrapper(func);
-
-  function wrapper() {
-    var argsIndex = -1,
-        argsLength = arguments.length,
-        leftIndex = -1,
-        leftLength = partials.length,
-        args = Array(leftLength + argsLength),
-        fn = (this && this !== global && this instanceof wrapper) ? Ctor : func;
-
-    while (++leftIndex < leftLength) {
-      args[leftIndex] = partials[leftIndex];
-    }
-    while (argsLength--) {
-      args[leftIndex++] = arguments[++argsIndex];
-    }
-    return apply(fn, isBind ? thisArg : this, args);
-  }
-  return wrapper;
-}
-
-/**
- * Creates a function that wraps `func` to continue currying.
- *
- * @private
- * @param {Function} func The function to wrap.
- * @param {number} bitmask The bitmask of wrapper flags. See `createWrapper` for more details.
- * @param {Function} wrapFunc The function to create the `func` wrapper.
- * @param {*} placeholder The placeholder to replace.
- * @param {*} [thisArg] The `this` binding of `func`.
- * @param {Array} [partials] The arguments to prepend to those provided to the new function.
- * @param {Array} [holders] The `partials` placeholder indexes.
- * @param {Array} [argPos] The argument positions of the new function.
- * @param {number} [ary] The arity cap of `func`.
- * @param {number} [arity] The arity of `func`.
- * @returns {Function} Returns the new wrapped function.
- */
-function createRecurryWrapper(func, bitmask, wrapFunc, placeholder, thisArg, partials, holders, argPos, ary, arity) {
-  var isCurry = bitmask & CURRY_FLAG,
-      newArgPos = argPos ? copyArray(argPos) : undefined,
-      newsHolders = isCurry ? holders : undefined,
-      newHoldersRight = isCurry ? undefined : holders,
-      newPartials = isCurry ? partials : undefined,
-      newPartialsRight = isCurry ? undefined : partials;
-
-  bitmask |= (isCurry ? PARTIAL_FLAG : PARTIAL_RIGHT_FLAG);
-  bitmask &= ~(isCurry ? PARTIAL_RIGHT_FLAG : PARTIAL_FLAG);
-
-  if (!(bitmask & CURRY_BOUND_FLAG)) {
-    bitmask &= ~(BIND_FLAG | BIND_KEY_FLAG);
-  }
-  var result = wrapFunc(func, bitmask, thisArg, newPartials, newsHolders, newPartialsRight, newHoldersRight, newArgPos, ary, arity);
-
-  result.placeholder = placeholder;
-  return result;
-}
-
-/**
- * Creates a function that either curries or invokes `func` with optional
- * `this` binding and partially applied arguments.
- *
- * @private
- * @param {Function|string} func The function or method name to wrap.
- * @param {number} bitmask The bitmask of wrapper flags.
- *  The bitmask may be composed of the following flags:
- *     1 - `_.bind`
- *     2 - `_.bindKey`
- *     4 - `_.curry` or `_.curryRight` of a bound function
- *     8 - `_.curry`
- *    16 - `_.curryRight`
- *    32 - `_.partial`
- *    64 - `_.partialRight`
- *   128 - `_.rearg`
- *   256 - `_.ary`
- * @param {*} [thisArg] The `this` binding of `func`.
- * @param {Array} [partials] The arguments to be partially applied.
- * @param {Array} [holders] The `partials` placeholder indexes.
- * @param {Array} [argPos] The argument positions of the new function.
- * @param {number} [ary] The arity cap of `func`.
- * @param {number} [arity] The arity of `func`.
- * @returns {Function} Returns the new wrapped function.
- */
-function createWrapper(func, bitmask, thisArg, partials, holders, argPos, ary, arity) {
-  var isBindKey = bitmask & BIND_KEY_FLAG;
-  if (!isBindKey && typeof func != 'function') {
-    throw new TypeError(FUNC_ERROR_TEXT);
-  }
-  var length = partials ? partials.length : 0;
-  if (!length) {
-    bitmask &= ~(PARTIAL_FLAG | PARTIAL_RIGHT_FLAG);
-    partials = holders = undefined;
-  }
-  ary = ary === undefined ? ary : nativeMax(toInteger(ary), 0);
-  arity = arity === undefined ? arity : toInteger(arity);
-  length -= holders ? holders.length : 0;
-
-  if (bitmask & PARTIAL_RIGHT_FLAG) {
-    var partialsRight = partials,
-        holdersRight = holders;
-
-    partials = holders = undefined;
-  }
-  var newData = [func, bitmask, thisArg, partials, holders, partialsRight, holdersRight, argPos, ary, arity];
-
-  func = newData[0];
-  bitmask = newData[1];
-  thisArg = newData[2];
-  partials = newData[3];
-  holders = newData[4];
-  arity = newData[9] = newData[9] == null
-    ? (isBindKey ? 0 : func.length)
-    : nativeMax(newData[9] - length, 0);
-
-  if (!arity && bitmask & (CURRY_FLAG | CURRY_RIGHT_FLAG)) {
-    bitmask &= ~(CURRY_FLAG | CURRY_RIGHT_FLAG);
-  }
-  if (!bitmask || bitmask == BIND_FLAG) {
-    var result = createBaseWrapper(func, bitmask, thisArg);
-  } else if (bitmask == CURRY_FLAG || bitmask == CURRY_RIGHT_FLAG) {
-    result = createCurryWrapper(func, bitmask, arity);
-  } else if ((bitmask == PARTIAL_FLAG || bitmask == (BIND_FLAG | PARTIAL_FLAG)) && !holders.length) {
-    result = createPartialWrapper(func, bitmask, thisArg, partials);
-  } else {
-    result = createHybridWrapper.apply(undefined, newData);
-  }
-  return result;
-}
-
-/**
- * Reorder `array` according to the specified indexes where the element at
- * the first index is assigned as the first element, the element at
- * the second index is assigned as the second element, and so on.
- *
- * @private
- * @param {Array} array The array to reorder.
- * @param {Array} indexes The arranged array indexes.
- * @returns {Array} Returns `array`.
- */
-function reorder(array, indexes) {
-  var arrLength = array.length,
-      length = nativeMin(indexes.length, arrLength),
-      oldArray = copyArray(array);
-
-  while (length--) {
-    var index = indexes[length];
-    array[length] = isIndex(index, arrLength) ? oldArray[index] : undefined;
-  }
-  return array;
-}
-
-/**
- * Checks if `value` is classified as a `Function` object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isFunction(_);
- * // => true
- *
- * _.isFunction(/abc/);
- * // => false
- */
-function isFunction(value) {
-  // The use of `Object#toString` avoids issues with the `typeof` operator
-  // in Safari 8 which returns 'object' for typed array constructors, and
-  // PhantomJS 1.9 which returns 'function' for `NodeList` instances.
-  var tag = isObject(value) ? objectToString.call(value) : '';
-  return tag == funcTag || tag == genTag;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(_.noop);
- * // => true
- *
- * _.isObject(null);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Converts `value` to an integer.
- *
- * **Note:** This function is loosely based on [`ToInteger`](http://www.ecma-international.org/ecma-262/6.0/#sec-tointeger).
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to convert.
- * @returns {number} Returns the converted integer.
- * @example
- *
- * _.toInteger(3);
- * // => 3
- *
- * _.toInteger(Number.MIN_VALUE);
- * // => 0
- *
- * _.toInteger(Infinity);
- * // => 1.7976931348623157e+308
- *
- * _.toInteger('3');
- * // => 3
- */
-function toInteger(value) {
-  if (!value) {
-    return value === 0 ? value : 0;
-  }
-  value = toNumber(value);
-  if (value === INFINITY || value === -INFINITY) {
-    var sign = (value < 0 ? -1 : 1);
-    return sign * MAX_INTEGER;
-  }
-  var remainder = value % 1;
-  return value === value ? (remainder ? value - remainder : value) : 0;
-}
-
-/**
- * Converts `value` to a number.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to process.
- * @returns {number} Returns the number.
- * @example
- *
- * _.toNumber(3);
- * // => 3
- *
- * _.toNumber(Number.MIN_VALUE);
- * // => 5e-324
- *
- * _.toNumber(Infinity);
- * // => Infinity
- *
- * _.toNumber('3');
- * // => 3
- */
-function toNumber(value) {
-  if (isObject(value)) {
-    var other = isFunction(value.valueOf) ? value.valueOf() : value;
-    value = isObject(other) ? (other + '') : other;
-  }
-  if (typeof value != 'string') {
-    return value === 0 ? value : +value;
-  }
-  value = value.replace(reTrim, '');
-  var isBinary = reIsBinary.test(value);
-  return (isBinary || reIsOctal.test(value))
-    ? freeParseInt(value.slice(2), isBinary ? 2 : 8)
-    : (reIsBadHex.test(value) ? NAN : +value);
-}
-
-module.exports = createWrapper;
-
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],21:[function(require,module,exports){
-/**
- * lodash 3.9.1 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** `Object#toString` result references. */
-var funcTag = '[object Function]';
-
-/** Used to detect host constructors (Safari > 5). */
-var reIsHostCtor = /^\[object .+?Constructor\]$/;
-
-/**
- * Checks if `value` is object-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
- */
-function isObjectLike(value) {
-  return !!value && typeof value == 'object';
-}
-
-/** Used for native method references. */
-var objectProto = Object.prototype;
-
-/** Used to resolve the decompiled source of functions. */
-var fnToString = Function.prototype.toString;
-
-/** Used to check objects for own properties. */
-var hasOwnProperty = objectProto.hasOwnProperty;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objToString = objectProto.toString;
-
-/** Used to detect if a method is native. */
-var reIsNative = RegExp('^' +
-  fnToString.call(hasOwnProperty).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
-  .replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g, '$1.*?') + '$'
-);
-
-/**
- * Gets the native function at `key` of `object`.
- *
- * @private
- * @param {Object} object The object to query.
- * @param {string} key The key of the method to get.
- * @returns {*} Returns the function if it's native, else `undefined`.
- */
-function getNative(object, key) {
-  var value = object == null ? undefined : object[key];
-  return isNative(value) ? value : undefined;
-}
-
-/**
- * Checks if `value` is classified as a `Function` object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isFunction(_);
- * // => true
- *
- * _.isFunction(/abc/);
- * // => false
- */
-function isFunction(value) {
-  // The use of `Object#toString` avoids issues with the `typeof` operator
-  // in older versions of Chrome and Safari which return 'function' for regexes
-  // and Safari 8 equivalents which return 'object' for typed array constructors.
-  return isObject(value) && objToString.call(value) == funcTag;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Checks if `value` is a native function.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a native function, else `false`.
- * @example
- *
- * _.isNative(Array.prototype.push);
- * // => true
- *
- * _.isNative(_);
- * // => false
- */
-function isNative(value) {
-  if (value == null) {
-    return false;
-  }
-  if (isFunction(value)) {
-    return reIsNative.test(fnToString.call(value));
-  }
-  return isObjectLike(value) && reIsHostCtor.test(value);
-}
-
-module.exports = getNative;
-
-},{}],22:[function(require,module,exports){
-/**
- * lodash 3.0.9 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** Used to detect unsigned integer values. */
-var reIsUint = /^\d+$/;
-
-/**
- * Used as the [maximum length](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-number.max_safe_integer)
- * of an array-like value.
- */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/**
- * The base implementation of `_.property` without support for deep paths.
- *
- * @private
- * @param {string} key The key of the property to get.
- * @returns {Function} Returns the new function.
- */
-function baseProperty(key) {
-  return function(object) {
-    return object == null ? undefined : object[key];
-  };
-}
-
-/**
- * Gets the "length" property value of `object`.
- *
- * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
- * that affects Safari on at least iOS 8.1-8.3 ARM64.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {*} Returns the "length" value.
- */
-var getLength = baseProperty('length');
-
-/**
- * Checks if `value` is array-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
- */
-function isArrayLike(value) {
-  return value != null && isLength(getLength(value));
-}
-
-/**
- * Checks if `value` is a valid array-like index.
- *
- * @private
- * @param {*} value The value to check.
- * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
- * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
- */
-function isIndex(value, length) {
-  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
-  length = length == null ? MAX_SAFE_INTEGER : length;
-  return value > -1 && value % 1 == 0 && value < length;
-}
-
-/**
- * Checks if the provided arguments are from an iteratee call.
- *
- * @private
- * @param {*} value The potential iteratee value argument.
- * @param {*} index The potential iteratee index or key argument.
- * @param {*} object The potential iteratee object argument.
- * @returns {boolean} Returns `true` if the arguments are from an iteratee call, else `false`.
- */
-function isIterateeCall(value, index, object) {
-  if (!isObject(object)) {
-    return false;
-  }
-  var type = typeof index;
-  if (type == 'number'
-      ? (isArrayLike(object) && isIndex(index, object.length))
-      : (type == 'string' && index in object)) {
-    var other = object[index];
-    return value === value ? (value === other) : (other !== other);
-  }
-  return false;
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is based on [`ToLength`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-tolength).
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-module.exports = isIterateeCall;
-
-},{}],23:[function(require,module,exports){
-/**
- * lodash 3.0.2 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/**
- * A specialized version of `_.pick` which picks `object` properties specified
- * by `props`.
- *
- * @private
- * @param {Object} object The source object.
- * @param {string[]} props The property names to pick.
- * @returns {Object} Returns the new object.
- */
-function pickByArray(object, props) {
-  object = toObject(object);
-
-  var index = -1,
-      length = props.length,
-      result = {};
-
-  while (++index < length) {
-    var key = props[index];
-    if (key in object) {
-      result[key] = object[key];
-    }
-  }
-  return result;
-}
-
-/**
- * Converts `value` to an object if it's not one.
- *
- * @private
- * @param {*} value The value to process.
- * @returns {Object} Returns the object.
- */
-function toObject(value) {
-  return isObject(value) ? value : Object(value);
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-module.exports = pickByArray;
-
-},{}],24:[function(require,module,exports){
-/**
- * lodash 3.0.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.7.0 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseFor = require('lodash._basefor'),
-    keysIn = require('lodash.keysin');
-
-/**
- * The base implementation of `_.forIn` without support for callback
- * shorthands and `this` binding.
- *
- * @private
- * @param {Object} object The object to iterate over.
- * @param {Function} iteratee The function invoked per iteration.
- * @returns {Object} Returns `object`.
- */
-function baseForIn(object, iteratee) {
-  return baseFor(object, iteratee, keysIn);
-}
-
-/**
- * A specialized version of `_.pick` that picks `object` properties `predicate`
- * returns truthy for.
- *
- * @private
- * @param {Object} object The source object.
- * @param {Function} predicate The function invoked per iteration.
- * @returns {Object} Returns the new object.
- */
-function pickByCallback(object, predicate) {
-  var result = {};
-  baseForIn(object, function(value, key, object) {
-    if (predicate(value, key, object)) {
-      result[key] = value;
-    }
-  });
-  return result;
-}
-
-module.exports = pickByCallback;
-
-},{"lodash._basefor":12,"lodash.keysin":36}],25:[function(require,module,exports){
-/**
- * lodash 3.0.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.7.0 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** Used as the internal argument placeholder. */
-var PLACEHOLDER = '__lodash_placeholder__';
-
-/**
- * Replaces all `placeholder` elements in `array` with an internal placeholder
- * and returns an array of their indexes.
- *
- * @private
- * @param {Array} array The array to modify.
- * @param {*} placeholder The placeholder to replace.
- * @returns {Array} Returns the new array of placeholder indexes.
- */
-function replaceHolders(array, placeholder) {
-  var index = -1,
-      length = array.length,
-      resIndex = -1,
-      result = [];
-
-  while (++index < length) {
-    if (array[index] === placeholder) {
-      array[index] = PLACEHOLDER;
-      result[++resIndex] = index;
-    }
-  }
-  return result;
-}
-
-module.exports = replaceHolders;
-
-},{}],26:[function(require,module,exports){
-/**
- * lodash 3.2.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseAssign = require('lodash._baseassign'),
-    createAssigner = require('lodash._createassigner'),
-    keys = require('lodash.keys');
-
-/**
- * A specialized version of `_.assign` for customizing assigned values without
- * support for argument juggling, multiple sources, and `this` binding `customizer`
- * functions.
- *
- * @private
- * @param {Object} object The destination object.
- * @param {Object} source The source object.
- * @param {Function} customizer The function to customize assigned values.
- * @returns {Object} Returns `object`.
- */
-function assignWith(object, source, customizer) {
-  var index = -1,
-      props = keys(source),
-      length = props.length;
-
-  while (++index < length) {
-    var key = props[index],
-        value = object[key],
-        result = customizer(value, source[key], key, object, source);
-
-    if ((result === result ? (result !== value) : (value === value)) ||
-        (value === undefined && !(key in object))) {
-      object[key] = result;
-    }
-  }
-  return object;
-}
-
-/**
- * Assigns own enumerable properties of source object(s) to the destination
- * object. Subsequent sources overwrite property assignments of previous sources.
- * If `customizer` is provided it is invoked to produce the assigned values.
- * The `customizer` is bound to `thisArg` and invoked with five arguments:
- * (objectValue, sourceValue, key, object, source).
- *
- * **Note:** This method mutates `object` and is based on
- * [`Object.assign`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-object.assign).
- *
- * @static
- * @memberOf _
- * @alias extend
- * @category Object
- * @param {Object} object The destination object.
- * @param {...Object} [sources] The source objects.
- * @param {Function} [customizer] The function to customize assigned values.
- * @param {*} [thisArg] The `this` binding of `customizer`.
- * @returns {Object} Returns `object`.
- * @example
- *
- * _.assign({ 'user': 'barney' }, { 'age': 40 }, { 'user': 'fred' });
- * // => { 'user': 'fred', 'age': 40 }
- *
- * // using a customizer callback
- * var defaults = _.partialRight(_.assign, function(value, other) {
- *   return _.isUndefined(value) ? other : value;
- * });
- *
- * defaults({ 'user': 'barney' }, { 'age': 36 }, { 'user': 'fred' });
- * // => { 'user': 'barney', 'age': 36 }
- */
-var assign = createAssigner(function(object, source, customizer) {
-  return customizer
-    ? assignWith(object, source, customizer)
-    : baseAssign(object, source);
-});
-
-module.exports = assign;
-
-},{"lodash._baseassign":6,"lodash._createassigner":18,"lodash.keys":35}],27:[function(require,module,exports){
-/**
- * lodash 3.0.3 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseClone = require('lodash._baseclone'),
-    bindCallback = require('lodash._bindcallback'),
-    isIterateeCall = require('lodash._isiterateecall');
-
-/**
- * Creates a clone of `value`. If `isDeep` is `true` nested objects are cloned,
- * otherwise they are assigned by reference. If `customizer` is provided it's
- * invoked to produce the cloned values. If `customizer` returns `undefined`
- * cloning is handled by the method instead. The `customizer` is bound to
- * `thisArg` and invoked with up to three argument; (value [, index|key, object]).
- *
- * **Note:** This method is loosely based on the
- * [structured clone algorithm](http://www.w3.org/TR/html5/infrastructure.html#internal-structured-cloning-algorithm).
- * The enumerable properties of `arguments` objects and objects created by
- * constructors other than `Object` are cloned to plain `Object` objects. An
- * empty object is returned for uncloneable values such as functions, DOM nodes,
- * Maps, Sets, and WeakMaps.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to clone.
- * @param {boolean} [isDeep] Specify a deep clone.
- * @param {Function} [customizer] The function to customize cloning values.
- * @param {*} [thisArg] The `this` binding of `customizer`.
- * @returns {*} Returns the cloned value.
- * @example
- *
- * var users = [
- *   { 'user': 'barney' },
- *   { 'user': 'fred' }
- * ];
- *
- * var shallow = _.clone(users);
- * shallow[0] === users[0];
- * // => true
- *
- * var deep = _.clone(users, true);
- * deep[0] === users[0];
- * // => false
- *
- * // using a customizer callback
- * var el = _.clone(document.body, function(value) {
- *   if (_.isElement(value)) {
- *     return value.cloneNode(false);
- *   }
- * });
- *
- * el === document.body
- * // => false
- * el.nodeName
- * // => BODY
- * el.childNodes.length;
- * // => 0
- */
-function clone(value, isDeep, customizer, thisArg) {
-  if (isDeep && typeof isDeep != 'boolean' && isIterateeCall(value, isDeep, customizer)) {
-    isDeep = false;
-  }
-  else if (typeof isDeep == 'function') {
-    thisArg = customizer;
-    customizer = isDeep;
-    isDeep = false;
-  }
-  return typeof customizer == 'function'
-    ? baseClone(value, isDeep, bindCallback(customizer, thisArg, 3))
-    : baseClone(value, isDeep);
-}
-
-module.exports = clone;
-
-},{"lodash._baseclone":8,"lodash._bindcallback":16,"lodash._isiterateecall":22}],28:[function(require,module,exports){
-(function (global){
-/**
- * lodash 3.3.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modularize exports="npm" -o ./`
- * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** Used as references for various `Number` constants. */
-var INFINITY = 1 / 0,
-    MAX_SAFE_INTEGER = 9007199254740991,
-    MAX_INTEGER = 1.7976931348623157e+308,
-    NAN = 0 / 0;
-
-/** Used as references for the maximum length and index of an array. */
-var MAX_ARRAY_LENGTH = 4294967295;
-
-/** `Object#toString` result references. */
-var funcTag = '[object Function]',
-    genTag = '[object GeneratorFunction]';
-
-/** Used to match leading and trailing whitespace. */
-var reTrim = /^\s+|\s+$/g;
-
-/** Used to detect bad signed hexadecimal string values. */
-var reIsBadHex = /^[-+]0x[0-9a-f]+$/i;
-
-/** Used to detect binary string values. */
-var reIsBinary = /^0b[01]+$/i;
-
-/** Used to detect octal string values. */
-var reIsOctal = /^0o[0-7]+$/i;
-
-/** Used to detect unsigned integer values. */
-var reIsUint = /^(?:0|[1-9]\d*)$/;
-
-/** Built-in method references without a dependency on `global`. */
-var freeParseInt = parseInt;
-
-/**
- * Checks if `value` is a valid array-like index.
- *
- * @private
- * @param {*} value The value to check.
- * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
- * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
- */
-function isIndex(value, length) {
-  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
-  length = length == null ? MAX_SAFE_INTEGER : length;
-  return value > -1 && value % 1 == 0 && value < length;
-}
-
-/** Used for built-in method references. */
-var objectProto = global.Object.prototype;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objectToString = objectProto.toString;
-
-/**
- * The base implementation of `_.clamp` which doesn't coerce arguments to numbers.
- *
- * @private
- * @param {number} number The number to clamp.
- * @param {number} [lower] The lower bound.
- * @param {number} upper The upper bound.
- * @returns {number} Returns the clamped number.
- */
-function baseClamp(number, lower, upper) {
-  if (number === number) {
-    if (upper !== undefined) {
-      number = number <= upper ? number : upper;
-    }
-    if (lower !== undefined) {
-      number = number >= lower ? number : lower;
-    }
-  }
-  return number;
-}
-
-/**
- * The base implementation of `_.fill` without an iteratee call guard.
- *
- * @private
- * @param {Array} array The array to fill.
- * @param {*} value The value to fill `array` with.
- * @param {number} [start=0] The start position.
- * @param {number} [end=array.length] The end position.
- * @returns {Array} Returns `array`.
- */
-function baseFill(array, value, start, end) {
-  var length = array.length;
-
-  start = toInteger(start);
-  if (start < 0) {
-    start = -start > length ? 0 : (length + start);
-  }
-  end = (end === undefined || end > length) ? length : toInteger(end);
-  if (end < 0) {
-    end += length;
-  }
-  end = start > end ? 0 : toLength(end);
-  while (start < end) {
-    array[start++] = value;
-  }
-  return array;
-}
-
-/**
- * The base implementation of `_.property` without support for deep paths.
- *
- * @private
- * @param {string} key The key of the property to get.
- * @returns {Function} Returns the new function.
- */
-function baseProperty(key) {
-  return function(object) {
-    return object == null ? undefined : object[key];
-  };
-}
-
-/**
- * Gets the "length" property value of `object`.
- *
- * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
- * that affects Safari on at least iOS 8.1-8.3 ARM64.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {*} Returns the "length" value.
- */
-var getLength = baseProperty('length');
-
-/**
- * Checks if the provided arguments are from an iteratee call.
- *
- * @private
- * @param {*} value The potential iteratee value argument.
- * @param {*} index The potential iteratee index or key argument.
- * @param {*} object The potential iteratee object argument.
- * @returns {boolean} Returns `true` if the arguments are from an iteratee call, else `false`.
- */
-function isIterateeCall(value, index, object) {
-  if (!isObject(object)) {
-    return false;
-  }
-  var type = typeof index;
-  if (type == 'number'
-      ? (isArrayLike(object) && isIndex(index, object.length))
-      : (type == 'string' && index in object)) {
-    return eq(object[index], value);
-  }
-  return false;
-}
-
-/**
- * Fills elements of `array` with `value` from `start` up to, but not
- * including, `end`.
- *
- * **Note:** This method mutates `array`.
- *
- * @static
- * @memberOf _
- * @category Array
- * @param {Array} array The array to fill.
- * @param {*} value The value to fill `array` with.
- * @param {number} [start=0] The start position.
- * @param {number} [end=array.length] The end position.
- * @returns {Array} Returns `array`.
- * @example
- *
- * var array = [1, 2, 3];
- *
- * _.fill(array, 'a');
- * console.log(array);
- * // => ['a', 'a', 'a']
- *
- * _.fill(Array(3), 2);
- * // => [2, 2, 2]
- *
- * _.fill([4, 6, 8, 10], '*', 1, 3);
- * // => [4, '*', '*', 10]
- */
-function fill(array, value, start, end) {
-  var length = array ? array.length : 0;
-  if (!length) {
-    return [];
-  }
-  if (start && typeof start != 'number' && isIterateeCall(array, value, start)) {
-    start = 0;
-    end = length;
-  }
-  return baseFill(array, value, start, end);
-}
-
-/**
- * Performs a [`SameValueZero`](http://ecma-international.org/ecma-262/6.0/#sec-samevaluezero)
- * comparison between two values to determine if they are equivalent.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to compare.
- * @param {*} other The other value to compare.
- * @returns {boolean} Returns `true` if the values are equivalent, else `false`.
- * @example
- *
- * var object = { 'user': 'fred' };
- * var other = { 'user': 'fred' };
- *
- * _.eq(object, object);
- * // => true
- *
- * _.eq(object, other);
- * // => false
- *
- * _.eq('a', 'a');
- * // => true
- *
- * _.eq('a', Object('a'));
- * // => false
- *
- * _.eq(NaN, NaN);
- * // => true
- */
-function eq(value, other) {
-  return value === other || (value !== value && other !== other);
-}
-
-/**
- * Checks if `value` is array-like. A value is considered array-like if it's
- * not a function and has a `value.length` that's an integer greater than or
- * equal to `0` and less than or equal to `Number.MAX_SAFE_INTEGER`.
- *
- * @static
- * @memberOf _
- * @type Function
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
- * @example
- *
- * _.isArrayLike([1, 2, 3]);
- * // => true
- *
- * _.isArrayLike(document.body.children);
- * // => true
- *
- * _.isArrayLike('abc');
- * // => true
- *
- * _.isArrayLike(_.noop);
- * // => false
- */
-function isArrayLike(value) {
-  return value != null &&
-    !(typeof value == 'function' && isFunction(value)) && isLength(getLength(value));
-}
-
-/**
- * Checks if `value` is classified as a `Function` object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isFunction(_);
- * // => true
- *
- * _.isFunction(/abc/);
- * // => false
- */
-function isFunction(value) {
-  // The use of `Object#toString` avoids issues with the `typeof` operator
-  // in Safari 8 which returns 'object' for typed array constructors, and
-  // PhantomJS 1.9 which returns 'function' for `NodeList` instances.
-  var tag = isObject(value) ? objectToString.call(value) : '';
-  return tag == funcTag || tag == genTag;
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is loosely based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- * @example
- *
- * _.isLength(3);
- * // => true
- *
- * _.isLength(Number.MIN_VALUE);
- * // => false
- *
- * _.isLength(Infinity);
- * // => false
- *
- * _.isLength('3');
- * // => false
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(_.noop);
- * // => true
- *
- * _.isObject(null);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Converts `value` to an integer.
- *
- * **Note:** This function is loosely based on [`ToInteger`](http://www.ecma-international.org/ecma-262/6.0/#sec-tointeger).
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to convert.
- * @returns {number} Returns the converted integer.
- * @example
- *
- * _.toInteger(3);
- * // => 3
- *
- * _.toInteger(Number.MIN_VALUE);
- * // => 0
- *
- * _.toInteger(Infinity);
- * // => 1.7976931348623157e+308
- *
- * _.toInteger('3');
- * // => 3
- */
-function toInteger(value) {
-  if (!value) {
-    return value === 0 ? value : 0;
-  }
-  value = toNumber(value);
-  if (value === INFINITY || value === -INFINITY) {
-    var sign = (value < 0 ? -1 : 1);
-    return sign * MAX_INTEGER;
-  }
-  var remainder = value % 1;
-  return value === value ? (remainder ? value - remainder : value) : 0;
-}
-
-/**
- * Converts `value` to an integer suitable for use as the length of an
- * array-like object.
- *
- * **Note:** This method is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to convert.
- * @return {number} Returns the converted integer.
- * @example
- *
- * _.toLength(3);
- * // => 3
- *
- * _.toLength(Number.MIN_VALUE);
- * // => 0
- *
- * _.toLength(Infinity);
- * // => 4294967295
- *
- * _.toLength('3');
- * // => 3
- */
-function toLength(value) {
-  return value ? baseClamp(toInteger(value), 0, MAX_ARRAY_LENGTH) : 0;
-}
-
-/**
- * Converts `value` to a number.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to process.
- * @returns {number} Returns the number.
- * @example
- *
- * _.toNumber(3);
- * // => 3
- *
- * _.toNumber(Number.MIN_VALUE);
- * // => 5e-324
- *
- * _.toNumber(Infinity);
- * // => Infinity
- *
- * _.toNumber('3');
- * // => 3
- */
-function toNumber(value) {
-  if (isObject(value)) {
-    var other = isFunction(value.valueOf) ? value.valueOf() : value;
-    value = isObject(other) ? (other + '') : other;
-  }
-  if (typeof value != 'string') {
-    return value === 0 ? value : +value;
-  }
-  value = value.replace(reTrim, '');
-  var isBinary = reIsBinary.test(value);
-  return (isBinary || reIsOctal.test(value))
-    ? freeParseInt(value.slice(2), isBinary ? 2 : 8)
-    : (reIsBadHex.test(value) ? NAN : +value);
-}
-
-module.exports = fill;
-
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],29:[function(require,module,exports){
-/**
- * lodash 3.0.2 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseFlatten = require('lodash._baseflatten'),
-    isIterateeCall = require('lodash._isiterateecall');
-
-/**
- * Flattens a nested array. If `isDeep` is `true` the array is recursively
- * flattened, otherwise it is only flattened a single level.
- *
- * @static
- * @memberOf _
- * @category Array
- * @param {Array} array The array to flatten.
- * @param {boolean} [isDeep] Specify a deep flatten.
- * @param- {Object} [guard] Enables use as a callback for functions like `_.map`.
- * @returns {Array} Returns the new flattened array.
- * @example
- *
- * _.flatten([1, [2, 3, [4]]]);
- * // => [1, 2, 3, [4]]
- *
- * // using `isDeep`
- * _.flatten([1, [2, 3, [4]]], true);
- * // => [1, 2, 3, 4]
- */
-function flatten(array, isDeep, guard) {
-  var length = array ? array.length : 0;
-  if (guard && isIterateeCall(array, isDeep, guard)) {
-    isDeep = false;
-  }
-  return length ? baseFlatten(array, isDeep) : [];
-}
-
-module.exports = flatten;
-
-},{"lodash._baseflatten":11,"lodash._isiterateecall":22}],30:[function(require,module,exports){
-/**
- * lodash 3.2.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseIndexOf = require('lodash._baseindexof'),
-    cacheIndexOf = require('lodash._cacheindexof'),
-    createCache = require('lodash._createcache'),
-    restParam = require('lodash.restparam');
-
-/**
- * Used as the [maximum length](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-number.max_safe_integer)
- * of an array-like value.
- */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/**
- * The base implementation of `_.property` without support for deep paths.
- *
- * @private
- * @param {string} key The key of the property to get.
- * @returns {Function} Returns the new function.
- */
-function baseProperty(key) {
-  return function(object) {
-    return object == null ? undefined : object[key];
-  };
-}
-
-/**
- * Gets the "length" property value of `object`.
- *
- * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
- * that affects Safari on at least iOS 8.1-8.3 ARM64.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {*} Returns the "length" value.
- */
-var getLength = baseProperty('length');
-
-/**
- * Checks if `value` is array-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
- */
-function isArrayLike(value) {
-  return value != null && isLength(getLength(value));
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is based on [`ToLength`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-tolength).
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Creates an array of unique values in all provided arrays using
- * [`SameValueZero`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-samevaluezero)
- * for equality comparisons.
- *
- * @static
- * @memberOf _
- * @category Array
- * @param {...Array} [arrays] The arrays to inspect.
- * @returns {Array} Returns the new array of shared values.
- * @example
- * _.intersection([1, 2], [4, 2], [2, 1]);
- * // => [2]
- */
-var intersection = restParam(function(arrays) {
-  var othLength = arrays.length,
-      othIndex = othLength,
-      caches = Array(length),
-      indexOf = baseIndexOf,
-      isCommon = true,
-      result = [];
-
-  while (othIndex--) {
-    var value = arrays[othIndex] = isArrayLike(value = arrays[othIndex]) ? value : [];
-    caches[othIndex] = (isCommon && value.length >= 120) ? createCache(othIndex && value) : null;
-  }
-  var array = arrays[0],
-      index = -1,
-      length = array ? array.length : 0,
-      seen = caches[0];
-
-  outer:
-  while (++index < length) {
-    value = array[index];
-    if ((seen ? cacheIndexOf(seen, value) : indexOf(result, value, 0)) < 0) {
-      var othIndex = othLength;
-      while (--othIndex) {
-        var cache = caches[othIndex];
-        if ((cache ? cacheIndexOf(cache, value) : indexOf(arrays[othIndex], value, 0)) < 0) {
-          continue outer;
-        }
-      }
-      if (seen) {
-        seen.push(value);
-      }
-      result.push(value);
-    }
-  }
-  return result;
-});
-
-module.exports = intersection;
-
-},{"lodash._baseindexof":13,"lodash._cacheindexof":17,"lodash._createcache":19,"lodash.restparam":42}],31:[function(require,module,exports){
-(function (global){
-/**
- * lodash 3.0.5 (Custom Build) <https://lodash.com/>
- * Build: `lodash modularize exports="npm" -o ./`
- * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** Used as references for various `Number` constants. */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/** `Object#toString` result references. */
-var argsTag = '[object Arguments]',
-    funcTag = '[object Function]',
-    genTag = '[object GeneratorFunction]';
-
-/** Used for built-in method references. */
-var objectProto = global.Object.prototype;
-
-/** Used to check objects for own properties. */
-var hasOwnProperty = objectProto.hasOwnProperty;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objectToString = objectProto.toString;
-
-/** Built-in value references. */
-var propertyIsEnumerable = objectProto.propertyIsEnumerable;
-
-/**
- * The base implementation of `_.property` without support for deep paths.
- *
- * @private
- * @param {string} key The key of the property to get.
- * @returns {Function} Returns the new function.
- */
-function baseProperty(key) {
-  return function(object) {
-    return object == null ? undefined : object[key];
-  };
-}
-
-/**
- * Gets the "length" property value of `object`.
- *
- * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
- * that affects Safari on at least iOS 8.1-8.3 ARM64.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {*} Returns the "length" value.
- */
-var getLength = baseProperty('length');
-
-/**
- * Checks if `value` is likely an `arguments` object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isArguments(function() { return arguments; }());
- * // => true
- *
- * _.isArguments([1, 2, 3]);
- * // => false
- */
-function isArguments(value) {
-  // Safari 8.1 incorrectly makes `arguments.callee` enumerable in strict mode.
-  return isArrayLikeObject(value) && hasOwnProperty.call(value, 'callee') &&
-    (!propertyIsEnumerable.call(value, 'callee') || objectToString.call(value) == argsTag);
-}
-
-/**
- * Checks if `value` is array-like. A value is considered array-like if it's
- * not a function and has a `value.length` that's an integer greater than or
- * equal to `0` and less than or equal to `Number.MAX_SAFE_INTEGER`.
- *
- * @static
- * @memberOf _
- * @type Function
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
- * @example
- *
- * _.isArrayLike([1, 2, 3]);
- * // => true
- *
- * _.isArrayLike(document.body.children);
- * // => true
- *
- * _.isArrayLike('abc');
- * // => true
- *
- * _.isArrayLike(_.noop);
- * // => false
- */
-function isArrayLike(value) {
-  return value != null &&
-    !(typeof value == 'function' && isFunction(value)) && isLength(getLength(value));
-}
-
-/**
- * This method is like `_.isArrayLike` except that it also checks if `value`
- * is an object.
- *
- * @static
- * @memberOf _
- * @type Function
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an array-like object, else `false`.
- * @example
- *
- * _.isArrayLikeObject([1, 2, 3]);
- * // => true
- *
- * _.isArrayLikeObject(document.body.children);
- * // => true
- *
- * _.isArrayLikeObject('abc');
- * // => false
- *
- * _.isArrayLikeObject(_.noop);
- * // => false
- */
-function isArrayLikeObject(value) {
-  return isObjectLike(value) && isArrayLike(value);
-}
-
-/**
- * Checks if `value` is classified as a `Function` object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isFunction(_);
- * // => true
- *
- * _.isFunction(/abc/);
- * // => false
- */
-function isFunction(value) {
-  // The use of `Object#toString` avoids issues with the `typeof` operator
-  // in Safari 8 which returns 'object' for typed array constructors, and
-  // PhantomJS 1.9 which returns 'function' for `NodeList` instances.
-  var tag = isObject(value) ? objectToString.call(value) : '';
-  return tag == funcTag || tag == genTag;
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is loosely based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- * @example
- *
- * _.isLength(3);
- * // => true
- *
- * _.isLength(Number.MIN_VALUE);
- * // => false
- *
- * _.isLength(Infinity);
- * // => false
- *
- * _.isLength('3');
- * // => false
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(_.noop);
- * // => true
- *
- * _.isObject(null);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Checks if `value` is object-like. A value is object-like if it's not `null`
- * and has a `typeof` result of "object".
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
- * @example
- *
- * _.isObjectLike({});
- * // => true
- *
- * _.isObjectLike([1, 2, 3]);
- * // => true
- *
- * _.isObjectLike(_.noop);
- * // => false
- *
- * _.isObjectLike(null);
- * // => false
- */
-function isObjectLike(value) {
-  return !!value && typeof value == 'object';
-}
-
-module.exports = isArguments;
-
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],32:[function(require,module,exports){
-/**
- * lodash 3.0.4 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** `Object#toString` result references. */
-var arrayTag = '[object Array]',
-    funcTag = '[object Function]';
-
-/** Used to detect host constructors (Safari > 5). */
-var reIsHostCtor = /^\[object .+?Constructor\]$/;
-
-/**
- * Checks if `value` is object-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
- */
-function isObjectLike(value) {
-  return !!value && typeof value == 'object';
-}
-
-/** Used for native method references. */
-var objectProto = Object.prototype;
-
-/** Used to resolve the decompiled source of functions. */
-var fnToString = Function.prototype.toString;
-
-/** Used to check objects for own properties. */
-var hasOwnProperty = objectProto.hasOwnProperty;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objToString = objectProto.toString;
-
-/** Used to detect if a method is native. */
-var reIsNative = RegExp('^' +
-  fnToString.call(hasOwnProperty).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
-  .replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g, '$1.*?') + '$'
-);
-
-/* Native method references for those with the same name as other `lodash` methods. */
-var nativeIsArray = getNative(Array, 'isArray');
-
-/**
- * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
- * of an array-like value.
- */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/**
- * Gets the native function at `key` of `object`.
- *
- * @private
- * @param {Object} object The object to query.
- * @param {string} key The key of the method to get.
- * @returns {*} Returns the function if it's native, else `undefined`.
- */
-function getNative(object, key) {
-  var value = object == null ? undefined : object[key];
-  return isNative(value) ? value : undefined;
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Checks if `value` is classified as an `Array` object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isArray([1, 2, 3]);
- * // => true
- *
- * _.isArray(function() { return arguments; }());
- * // => false
- */
-var isArray = nativeIsArray || function(value) {
-  return isObjectLike(value) && isLength(value.length) && objToString.call(value) == arrayTag;
-};
-
-/**
- * Checks if `value` is classified as a `Function` object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isFunction(_);
- * // => true
- *
- * _.isFunction(/abc/);
- * // => false
- */
-function isFunction(value) {
-  // The use of `Object#toString` avoids issues with the `typeof` operator
-  // in older versions of Chrome and Safari which return 'function' for regexes
-  // and Safari 8 equivalents which return 'object' for typed array constructors.
-  return isObject(value) && objToString.call(value) == funcTag;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Checks if `value` is a native function.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a native function, else `false`.
- * @example
- *
- * _.isNative(Array.prototype.push);
- * // => true
- *
- * _.isNative(_);
- * // => false
- */
-function isNative(value) {
-  if (value == null) {
-    return false;
-  }
-  if (isFunction(value)) {
-    return reIsNative.test(fnToString.call(value));
-  }
-  return isObjectLike(value) && reIsHostCtor.test(value);
-}
-
-module.exports = isArray;
-
-},{}],33:[function(require,module,exports){
-/**
- * lodash 3.2.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseFor = require('lodash._basefor'),
-    isArguments = require('lodash.isarguments'),
-    keysIn = require('lodash.keysin');
-
-/** `Object#toString` result references. */
-var objectTag = '[object Object]';
-
-/**
- * Checks if `value` is object-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
- */
-function isObjectLike(value) {
-  return !!value && typeof value == 'object';
-}
-
-/** Used for native method references. */
-var objectProto = Object.prototype;
-
-/** Used to check objects for own properties. */
-var hasOwnProperty = objectProto.hasOwnProperty;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objToString = objectProto.toString;
-
-/**
- * The base implementation of `_.forIn` without support for callback
- * shorthands and `this` binding.
- *
- * @private
- * @param {Object} object The object to iterate over.
- * @param {Function} iteratee The function invoked per iteration.
- * @returns {Object} Returns `object`.
- */
-function baseForIn(object, iteratee) {
-  return baseFor(object, iteratee, keysIn);
-}
-
-/**
- * Checks if `value` is a plain object, that is, an object created by the
- * `Object` constructor or one with a `[[Prototype]]` of `null`.
- *
- * **Note:** This method assumes objects created by the `Object` constructor
- * have no inherited enumerable properties.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a plain object, else `false`.
- * @example
- *
- * function Foo() {
- *   this.a = 1;
- * }
- *
- * _.isPlainObject(new Foo);
- * // => false
- *
- * _.isPlainObject([1, 2, 3]);
- * // => false
- *
- * _.isPlainObject({ 'x': 0, 'y': 0 });
- * // => true
- *
- * _.isPlainObject(Object.create(null));
- * // => true
- */
-function isPlainObject(value) {
-  var Ctor;
-
-  // Exit early for non `Object` objects.
-  if (!(isObjectLike(value) && objToString.call(value) == objectTag && !isArguments(value)) ||
-      (!hasOwnProperty.call(value, 'constructor') && (Ctor = value.constructor, typeof Ctor == 'function' && !(Ctor instanceof Ctor)))) {
-    return false;
-  }
-  // IE < 9 iterates inherited properties before own properties. If the first
-  // iterated property is an object's own property then there are no inherited
-  // enumerable properties.
-  var result;
-  // In most environments an object's own properties are iterated before
-  // its inherited properties. If the last iterated property is an object's
-  // own property then there are no inherited enumerable properties.
-  baseForIn(value, function(subValue, key) {
-    result = key;
-  });
-  return result === undefined || hasOwnProperty.call(value, result);
-}
-
-module.exports = isPlainObject;
-
-},{"lodash._basefor":12,"lodash.isarguments":31,"lodash.keysin":36}],34:[function(require,module,exports){
-(function (global){
-/**
- * lodash 3.0.3 (Custom Build) <https://lodash.com/>
- * Build: `lodash modularize exports="npm" -o ./`
- * Copyright 2012-2016 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2016 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** Used as references for various `Number` constants. */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/** `Object#toString` result references. */
-var argsTag = '[object Arguments]',
-    arrayTag = '[object Array]',
-    boolTag = '[object Boolean]',
-    dateTag = '[object Date]',
-    errorTag = '[object Error]',
-    funcTag = '[object Function]',
-    mapTag = '[object Map]',
-    numberTag = '[object Number]',
-    objectTag = '[object Object]',
-    regexpTag = '[object RegExp]',
-    setTag = '[object Set]',
-    stringTag = '[object String]',
-    weakMapTag = '[object WeakMap]';
-
-var arrayBufferTag = '[object ArrayBuffer]',
-    float32Tag = '[object Float32Array]',
-    float64Tag = '[object Float64Array]',
-    int8Tag = '[object Int8Array]',
-    int16Tag = '[object Int16Array]',
-    int32Tag = '[object Int32Array]',
-    uint8Tag = '[object Uint8Array]',
-    uint8ClampedTag = '[object Uint8ClampedArray]',
-    uint16Tag = '[object Uint16Array]',
-    uint32Tag = '[object Uint32Array]';
-
-/** Used to identify `toStringTag` values of typed arrays. */
-var typedArrayTags = {};
-typedArrayTags[float32Tag] = typedArrayTags[float64Tag] =
-typedArrayTags[int8Tag] = typedArrayTags[int16Tag] =
-typedArrayTags[int32Tag] = typedArrayTags[uint8Tag] =
-typedArrayTags[uint8ClampedTag] = typedArrayTags[uint16Tag] =
-typedArrayTags[uint32Tag] = true;
-typedArrayTags[argsTag] = typedArrayTags[arrayTag] =
-typedArrayTags[arrayBufferTag] = typedArrayTags[boolTag] =
-typedArrayTags[dateTag] = typedArrayTags[errorTag] =
-typedArrayTags[funcTag] = typedArrayTags[mapTag] =
-typedArrayTags[numberTag] = typedArrayTags[objectTag] =
-typedArrayTags[regexpTag] = typedArrayTags[setTag] =
-typedArrayTags[stringTag] = typedArrayTags[weakMapTag] = false;
-
-/** Used for built-in method references. */
-var objectProto = global.Object.prototype;
-
-/**
- * Used to resolve the [`toStringTag`](http://ecma-international.org/ecma-262/6.0/#sec-object.prototype.tostring)
- * of values.
- */
-var objectToString = objectProto.toString;
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is loosely based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- * @example
- *
- * _.isLength(3);
- * // => true
- *
- * _.isLength(Number.MIN_VALUE);
- * // => false
- *
- * _.isLength(Infinity);
- * // => false
- *
- * _.isLength('3');
- * // => false
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Checks if `value` is object-like. A value is object-like if it's not `null`
- * and has a `typeof` result of "object".
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
- * @example
- *
- * _.isObjectLike({});
- * // => true
- *
- * _.isObjectLike([1, 2, 3]);
- * // => true
- *
- * _.isObjectLike(_.noop);
- * // => false
- *
- * _.isObjectLike(null);
- * // => false
- */
-function isObjectLike(value) {
-  return !!value && typeof value == 'object';
-}
-
-/**
- * Checks if `value` is classified as a typed array.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is correctly classified, else `false`.
- * @example
- *
- * _.isTypedArray(new Uint8Array);
- * // => true
- *
- * _.isTypedArray([]);
- * // => false
- */
-function isTypedArray(value) {
-  return isObjectLike(value) && isLength(value.length) && !!typedArrayTags[objectToString.call(value)];
-}
-
-module.exports = isTypedArray;
-
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],35:[function(require,module,exports){
-/**
- * lodash 3.1.2 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var getNative = require('lodash._getnative'),
-    isArguments = require('lodash.isarguments'),
-    isArray = require('lodash.isarray');
-
-/** Used to detect unsigned integer values. */
-var reIsUint = /^\d+$/;
-
-/** Used for native method references. */
-var objectProto = Object.prototype;
-
-/** Used to check objects for own properties. */
-var hasOwnProperty = objectProto.hasOwnProperty;
-
-/* Native method references for those with the same name as other `lodash` methods. */
-var nativeKeys = getNative(Object, 'keys');
-
-/**
- * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
- * of an array-like value.
- */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/**
- * The base implementation of `_.property` without support for deep paths.
- *
- * @private
- * @param {string} key The key of the property to get.
- * @returns {Function} Returns the new function.
- */
-function baseProperty(key) {
-  return function(object) {
-    return object == null ? undefined : object[key];
-  };
-}
-
-/**
- * Gets the "length" property value of `object`.
- *
- * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
- * that affects Safari on at least iOS 8.1-8.3 ARM64.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {*} Returns the "length" value.
- */
-var getLength = baseProperty('length');
-
-/**
- * Checks if `value` is array-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
- */
-function isArrayLike(value) {
-  return value != null && isLength(getLength(value));
-}
-
-/**
- * Checks if `value` is a valid array-like index.
- *
- * @private
- * @param {*} value The value to check.
- * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
- * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
- */
-function isIndex(value, length) {
-  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
-  length = length == null ? MAX_SAFE_INTEGER : length;
-  return value > -1 && value % 1 == 0 && value < length;
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * A fallback implementation of `Object.keys` which creates an array of the
- * own enumerable property names of `object`.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {Array} Returns the array of property names.
- */
-function shimKeys(object) {
-  var props = keysIn(object),
-      propsLength = props.length,
-      length = propsLength && object.length;
-
-  var allowIndexes = !!length && isLength(length) &&
-    (isArray(object) || isArguments(object));
-
-  var index = -1,
-      result = [];
-
-  while (++index < propsLength) {
-    var key = props[index];
-    if ((allowIndexes && isIndex(key, length)) || hasOwnProperty.call(object, key)) {
-      result.push(key);
-    }
-  }
-  return result;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Creates an array of the own enumerable property names of `object`.
- *
- * **Note:** Non-object values are coerced to objects. See the
- * [ES spec](http://ecma-international.org/ecma-262/6.0/#sec-object.keys)
- * for more details.
- *
- * @static
- * @memberOf _
- * @category Object
- * @param {Object} object The object to query.
- * @returns {Array} Returns the array of property names.
- * @example
- *
- * function Foo() {
- *   this.a = 1;
- *   this.b = 2;
- * }
- *
- * Foo.prototype.c = 3;
- *
- * _.keys(new Foo);
- * // => ['a', 'b'] (iteration order is not guaranteed)
- *
- * _.keys('hi');
- * // => ['0', '1']
- */
-var keys = !nativeKeys ? shimKeys : function(object) {
-  var Ctor = object == null ? undefined : object.constructor;
-  if ((typeof Ctor == 'function' && Ctor.prototype === object) ||
-      (typeof object != 'function' && isArrayLike(object))) {
-    return shimKeys(object);
-  }
-  return isObject(object) ? nativeKeys(object) : [];
-};
-
-/**
- * Creates an array of the own and inherited enumerable property names of `object`.
- *
- * **Note:** Non-object values are coerced to objects.
- *
- * @static
- * @memberOf _
- * @category Object
- * @param {Object} object The object to query.
- * @returns {Array} Returns the array of property names.
- * @example
- *
- * function Foo() {
- *   this.a = 1;
- *   this.b = 2;
- * }
- *
- * Foo.prototype.c = 3;
- *
- * _.keysIn(new Foo);
- * // => ['a', 'b', 'c'] (iteration order is not guaranteed)
- */
-function keysIn(object) {
-  if (object == null) {
-    return [];
-  }
-  if (!isObject(object)) {
-    object = Object(object);
-  }
-  var length = object.length;
-  length = (length && isLength(length) &&
-    (isArray(object) || isArguments(object)) && length) || 0;
-
-  var Ctor = object.constructor,
-      index = -1,
-      isProto = typeof Ctor == 'function' && Ctor.prototype === object,
-      result = Array(length),
-      skipIndexes = length > 0;
-
-  while (++index < length) {
-    result[index] = (index + '');
-  }
-  for (var key in object) {
-    if (!(skipIndexes && isIndex(key, length)) &&
-        !(key == 'constructor' && (isProto || !hasOwnProperty.call(object, key)))) {
-      result.push(key);
-    }
-  }
-  return result;
-}
-
-module.exports = keys;
-
-},{"lodash._getnative":21,"lodash.isarguments":31,"lodash.isarray":32}],36:[function(require,module,exports){
-/**
- * lodash 3.0.8 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var isArguments = require('lodash.isarguments'),
-    isArray = require('lodash.isarray');
-
-/** Used to detect unsigned integer values. */
-var reIsUint = /^\d+$/;
-
-/** Used for native method references. */
-var objectProto = Object.prototype;
-
-/** Used to check objects for own properties. */
-var hasOwnProperty = objectProto.hasOwnProperty;
-
-/**
- * Used as the [maximum length](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-number.max_safe_integer)
- * of an array-like value.
- */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/**
- * Checks if `value` is a valid array-like index.
- *
- * @private
- * @param {*} value The value to check.
- * @param {number} [length=MAX_SAFE_INTEGER] The upper bounds of a valid index.
- * @returns {boolean} Returns `true` if `value` is a valid index, else `false`.
- */
-function isIndex(value, length) {
-  value = (typeof value == 'number' || reIsUint.test(value)) ? +value : -1;
-  length = length == null ? MAX_SAFE_INTEGER : length;
-  return value > -1 && value % 1 == 0 && value < length;
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is based on [`ToLength`](https://people.mozilla.org/~jorendorff/es6-draft.html#sec-tolength).
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Creates an array of the own and inherited enumerable property names of `object`.
- *
- * **Note:** Non-object values are coerced to objects.
- *
- * @static
- * @memberOf _
- * @category Object
- * @param {Object} object The object to query.
- * @returns {Array} Returns the array of property names.
- * @example
- *
- * function Foo() {
- *   this.a = 1;
- *   this.b = 2;
- * }
- *
- * Foo.prototype.c = 3;
- *
- * _.keysIn(new Foo);
- * // => ['a', 'b', 'c'] (iteration order is not guaranteed)
- */
-function keysIn(object) {
-  if (object == null) {
-    return [];
-  }
-  if (!isObject(object)) {
-    object = Object(object);
-  }
-  var length = object.length;
-  length = (length && isLength(length) &&
-    (isArray(object) || isArguments(object)) && length) || 0;
-
-  var Ctor = object.constructor,
-      index = -1,
-      isProto = typeof Ctor == 'function' && Ctor.prototype === object,
-      result = Array(length),
-      skipIndexes = length > 0;
-
-  while (++index < length) {
-    result[index] = (index + '');
-  }
-  for (var key in object) {
-    if (!(skipIndexes && isIndex(key, length)) &&
-        !(key == 'constructor' && (isProto || !hasOwnProperty.call(object, key)))) {
-      result.push(key);
-    }
-  }
-  return result;
-}
-
-module.exports = keysIn;
-
-},{"lodash.isarguments":31,"lodash.isarray":32}],37:[function(require,module,exports){
-/**
- * lodash 3.3.2 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var arrayCopy = require('lodash._arraycopy'),
-    arrayEach = require('lodash._arrayeach'),
-    createAssigner = require('lodash._createassigner'),
-    isArguments = require('lodash.isarguments'),
-    isArray = require('lodash.isarray'),
-    isPlainObject = require('lodash.isplainobject'),
-    isTypedArray = require('lodash.istypedarray'),
-    keys = require('lodash.keys'),
-    toPlainObject = require('lodash.toplainobject');
-
-/**
- * Checks if `value` is object-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
- */
-function isObjectLike(value) {
-  return !!value && typeof value == 'object';
-}
-
-/**
- * Used as the [maximum length](http://ecma-international.org/ecma-262/6.0/#sec-number.max_safe_integer)
- * of an array-like value.
- */
-var MAX_SAFE_INTEGER = 9007199254740991;
-
-/**
- * The base implementation of `_.merge` without support for argument juggling,
- * multiple sources, and `this` binding `customizer` functions.
- *
- * @private
- * @param {Object} object The destination object.
- * @param {Object} source The source object.
- * @param {Function} [customizer] The function to customize merged values.
- * @param {Array} [stackA=[]] Tracks traversed source objects.
- * @param {Array} [stackB=[]] Associates values with source counterparts.
- * @returns {Object} Returns `object`.
- */
-function baseMerge(object, source, customizer, stackA, stackB) {
-  if (!isObject(object)) {
-    return object;
-  }
-  var isSrcArr = isArrayLike(source) && (isArray(source) || isTypedArray(source)),
-      props = isSrcArr ? undefined : keys(source);
-
-  arrayEach(props || source, function(srcValue, key) {
-    if (props) {
-      key = srcValue;
-      srcValue = source[key];
-    }
-    if (isObjectLike(srcValue)) {
-      stackA || (stackA = []);
-      stackB || (stackB = []);
-      baseMergeDeep(object, source, key, baseMerge, customizer, stackA, stackB);
-    }
-    else {
-      var value = object[key],
-          result = customizer ? customizer(value, srcValue, key, object, source) : undefined,
-          isCommon = result === undefined;
-
-      if (isCommon) {
-        result = srcValue;
-      }
-      if ((result !== undefined || (isSrcArr && !(key in object))) &&
-          (isCommon || (result === result ? (result !== value) : (value === value)))) {
-        object[key] = result;
-      }
-    }
-  });
-  return object;
-}
-
-/**
- * A specialized version of `baseMerge` for arrays and objects which performs
- * deep merges and tracks traversed objects enabling objects with circular
- * references to be merged.
- *
- * @private
- * @param {Object} object The destination object.
- * @param {Object} source The source object.
- * @param {string} key The key of the value to merge.
- * @param {Function} mergeFunc The function to merge values.
- * @param {Function} [customizer] The function to customize merged values.
- * @param {Array} [stackA=[]] Tracks traversed source objects.
- * @param {Array} [stackB=[]] Associates values with source counterparts.
- * @returns {boolean} Returns `true` if the objects are equivalent, else `false`.
- */
-function baseMergeDeep(object, source, key, mergeFunc, customizer, stackA, stackB) {
-  var length = stackA.length,
-      srcValue = source[key];
-
-  while (length--) {
-    if (stackA[length] == srcValue) {
-      object[key] = stackB[length];
-      return;
-    }
-  }
-  var value = object[key],
-      result = customizer ? customizer(value, srcValue, key, object, source) : undefined,
-      isCommon = result === undefined;
-
-  if (isCommon) {
-    result = srcValue;
-    if (isArrayLike(srcValue) && (isArray(srcValue) || isTypedArray(srcValue))) {
-      result = isArray(value)
-        ? value
-        : (isArrayLike(value) ? arrayCopy(value) : []);
-    }
-    else if (isPlainObject(srcValue) || isArguments(srcValue)) {
-      result = isArguments(value)
-        ? toPlainObject(value)
-        : (isPlainObject(value) ? value : {});
-    }
-    else {
-      isCommon = false;
-    }
-  }
-  // Add the source value to the stack of traversed objects and associate
-  // it with its merged value.
-  stackA.push(srcValue);
-  stackB.push(result);
-
-  if (isCommon) {
-    // Recursively merge objects and arrays (susceptible to call stack limits).
-    object[key] = mergeFunc(result, srcValue, customizer, stackA, stackB);
-  } else if (result === result ? (result !== value) : (value === value)) {
-    object[key] = result;
-  }
-}
-
-/**
- * The base implementation of `_.property` without support for deep paths.
- *
- * @private
- * @param {string} key The key of the property to get.
- * @returns {Function} Returns the new function.
- */
-function baseProperty(key) {
-  return function(object) {
-    return object == null ? undefined : object[key];
-  };
-}
-
-/**
- * Gets the "length" property value of `object`.
- *
- * **Note:** This function is used to avoid a [JIT bug](https://bugs.webkit.org/show_bug.cgi?id=142792)
- * that affects Safari on at least iOS 8.1-8.3 ARM64.
- *
- * @private
- * @param {Object} object The object to query.
- * @returns {*} Returns the "length" value.
- */
-var getLength = baseProperty('length');
-
-/**
- * Checks if `value` is array-like.
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is array-like, else `false`.
- */
-function isArrayLike(value) {
-  return value != null && isLength(getLength(value));
-}
-
-/**
- * Checks if `value` is a valid array-like length.
- *
- * **Note:** This function is based on [`ToLength`](http://ecma-international.org/ecma-262/6.0/#sec-tolength).
- *
- * @private
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is a valid length, else `false`.
- */
-function isLength(value) {
-  return typeof value == 'number' && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
-}
-
-/**
- * Checks if `value` is the [language type](https://es5.github.io/#x8) of `Object`.
- * (e.g. arrays, functions, objects, regexes, `new Number(0)`, and `new String('')`)
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to check.
- * @returns {boolean} Returns `true` if `value` is an object, else `false`.
- * @example
- *
- * _.isObject({});
- * // => true
- *
- * _.isObject([1, 2, 3]);
- * // => true
- *
- * _.isObject(1);
- * // => false
- */
-function isObject(value) {
-  // Avoid a V8 JIT bug in Chrome 19-20.
-  // See https://code.google.com/p/v8/issues/detail?id=2291 for more details.
-  var type = typeof value;
-  return !!value && (type == 'object' || type == 'function');
-}
-
-/**
- * Recursively merges own enumerable properties of the source object(s), that
- * don't resolve to `undefined` into the destination object. Subsequent sources
- * overwrite property assignments of previous sources. If `customizer` is
- * provided it is invoked to produce the merged values of the destination and
- * source properties. If `customizer` returns `undefined` merging is handled
- * by the method instead. The `customizer` is bound to `thisArg` and invoked
- * with five arguments: (objectValue, sourceValue, key, object, source).
- *
- * @static
- * @memberOf _
- * @category Object
- * @param {Object} object The destination object.
- * @param {...Object} [sources] The source objects.
- * @param {Function} [customizer] The function to customize assigned values.
- * @param {*} [thisArg] The `this` binding of `customizer`.
- * @returns {Object} Returns `object`.
- * @example
- *
- * var users = {
- *   'data': [{ 'user': 'barney' }, { 'user': 'fred' }]
- * };
- *
- * var ages = {
- *   'data': [{ 'age': 36 }, { 'age': 40 }]
- * };
- *
- * _.merge(users, ages);
- * // => { 'data': [{ 'user': 'barney', 'age': 36 }, { 'user': 'fred', 'age': 40 }] }
- *
- * // using a customizer callback
- * var object = {
- *   'fruits': ['apple'],
- *   'vegetables': ['beet']
- * };
- *
- * var other = {
- *   'fruits': ['banana'],
- *   'vegetables': ['carrot']
- * };
- *
- * _.merge(object, other, function(a, b) {
- *   if (_.isArray(a)) {
- *     return a.concat(b);
- *   }
- * });
- * // => { 'fruits': ['apple', 'banana'], 'vegetables': ['beet', 'carrot'] }
- */
-var merge = createAssigner(baseMerge);
-
-module.exports = merge;
-
-},{"lodash._arraycopy":3,"lodash._arrayeach":4,"lodash._createassigner":18,"lodash.isarguments":31,"lodash.isarray":32,"lodash.isplainobject":33,"lodash.istypedarray":34,"lodash.keys":35,"lodash.toplainobject":43}],38:[function(require,module,exports){
-/**
- * lodash 3.1.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var arrayMap = require('lodash._arraymap'),
-    baseDifference = require('lodash._basedifference'),
-    baseFlatten = require('lodash._baseflatten'),
-    bindCallback = require('lodash._bindcallback'),
-    pickByArray = require('lodash._pickbyarray'),
-    pickByCallback = require('lodash._pickbycallback'),
-    keysIn = require('lodash.keysin'),
-    restParam = require('lodash.restparam');
-
-/**
- * The opposite of `_.pick`; this method creates an object composed of the
- * own and inherited enumerable properties of `object` that are not omitted.
- * Property names may be specified as individual arguments or as arrays of
- * property names. If `predicate` is provided it is invoked for each property
- * of `object` omitting the properties `predicate` returns truthy for. The
- * predicate is bound to `thisArg` and invoked with three arguments:
- * (value, key, object).
- *
- * @static
- * @memberOf _
- * @category Object
- * @param {Object} object The source object.
- * @param {Function|...(string|string[])} [predicate] The function invoked per
- *  iteration or property names to omit, specified as individual property
- *  names or arrays of property names.
- * @param {*} [thisArg] The `this` binding of `predicate`.
- * @returns {Object} Returns the new object.
- * @example
- *
- * var object = { 'user': 'fred', 'age': 40 };
- *
- * _.omit(object, 'age');
- * // => { 'user': 'fred' }
- *
- * _.omit(object, _.isNumber);
- * // => { 'user': 'fred' }
- */
-var omit = restParam(function(object, props) {
-  if (object == null) {
-    return {};
-  }
-  if (typeof props[0] != 'function') {
-    var props = arrayMap(baseFlatten(props), String);
-    return pickByArray(object, baseDifference(keysIn(object), props));
-  }
-  var predicate = bindCallback(props[0], props[1], 3);
-  return pickByCallback(object, function(value, key, object) {
-    return !predicate(value, key, object);
-  });
-});
-
-module.exports = omit;
-
-},{"lodash._arraymap":5,"lodash._basedifference":10,"lodash._baseflatten":11,"lodash._bindcallback":16,"lodash._pickbyarray":23,"lodash._pickbycallback":24,"lodash.keysin":36,"lodash.restparam":42}],39:[function(require,module,exports){
+},{"lodash.isarray":161,"lodash.istypedarray":148,"lodash.keys":149}],148:[function(require,module,exports){
+arguments[4][105][0].apply(exports,arguments)
+},{"dup":105}],149:[function(require,module,exports){
+arguments[4][64][0].apply(exports,arguments)
+},{"dup":64,"lodash._getnative":159,"lodash.isarguments":150,"lodash.isarray":161}],150:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],151:[function(require,module,exports){
+arguments[4][61][0].apply(exports,arguments)
+},{"dup":61}],152:[function(require,module,exports){
 /**
  * lodash 3.0.1 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
@@ -7538,346 +18124,93 @@ function pairs(object) {
 
 module.exports = pairs;
 
-},{"lodash.keys":35}],40:[function(require,module,exports){
+},{"lodash.keys":153}],153:[function(require,module,exports){
+arguments[4][64][0].apply(exports,arguments)
+},{"dup":64,"lodash._getnative":159,"lodash.isarguments":154,"lodash.isarray":161}],154:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],155:[function(require,module,exports){
 /**
- * lodash 3.1.1 (Custom Build) <https://lodash.com/>
+ * lodash 3.0.3 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern modularize exports="npm" -o ./`
  * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
  * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
  * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
  * Available under MIT license <https://lodash.com/license>
  */
-var createWrapper = require('lodash._createwrapper'),
-    replaceHolders = require('lodash._replaceholders'),
-    restParam = require('lodash.restparam');
+var baseIndexOf = require('lodash._baseindexof'),
+    cacheIndexOf = require('lodash._cacheindexof'),
+    createCache = require('lodash._createcache');
 
-/** Used to compose bitmasks for wrapper metadata. */
-var PARTIAL_RIGHT_FLAG = 64;
-
-/**
- * Creates a `_.partial` or `_.partialRight` function.
- *
- * @private
- * @param {boolean} flag The partial bit flag.
- * @returns {Function} Returns the new partial function.
- */
-function createPartial(flag) {
-  var partialFunc = restParam(function(func, partials) {
-    var holders = replaceHolders(partials, partialFunc.placeholder);
-    return createWrapper(func, flag, undefined, partials, holders);
-  });
-  return partialFunc;
-}
+/** Used as the size to enable large array optimizations. */
+var LARGE_ARRAY_SIZE = 200;
 
 /**
- * This method is like `_.partial` except that partially applied arguments
- * are appended to those provided to the new function.
- *
- * The `_.partialRight.placeholder` value, which defaults to `_` in monolithic
- * builds, may be used as a placeholder for partially applied arguments.
- *
- * **Note:** This method does not set the "length" property of partially
- * applied functions.
- *
- * @static
- * @memberOf _
- * @category Function
- * @param {Function} func The function to partially apply arguments to.
- * @param {...*} [partials] The arguments to be partially applied.
- * @returns {Function} Returns the new partially applied function.
- * @example
- *
- * var greet = function(greeting, name) {
- *   return greeting + ' ' + name;
- * };
- *
- * var greetFred = _.partialRight(greet, 'fred');
- * greetFred('hi');
- * // => 'hi fred'
- *
- * // using placeholders
- * var sayHelloTo = _.partialRight(greet, 'hello', _);
- * sayHelloTo('fred');
- * // => 'hello fred'
- */
-var partialRight = createPartial(PARTIAL_RIGHT_FLAG);
-
-// Assign default placeholders.
-partialRight.placeholder = {};
-
-module.exports = partialRight;
-
-},{"lodash._createwrapper":20,"lodash._replaceholders":25,"lodash.restparam":42}],41:[function(require,module,exports){
-/**
- * lodash 3.1.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.2 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseFlatten = require('lodash._baseflatten'),
-    bindCallback = require('lodash._bindcallback'),
-    pickByArray = require('lodash._pickbyarray'),
-    pickByCallback = require('lodash._pickbycallback'),
-    restParam = require('lodash.restparam');
-
-/**
- * Creates an object composed of the picked `object` properties. Property
- * names may be specified as individual arguments or as arrays of property
- * names. If `predicate` is provided it is invoked for each property of `object`
- * picking the properties `predicate` returns truthy for. The predicate is
- * bound to `thisArg` and invoked with three arguments: (value, key, object).
- *
- * @static
- * @memberOf _
- * @category Object
- * @param {Object} object The source object.
- * @param {Function|...(string|string[])} [predicate] The function invoked per
- *  iteration or property names to pick, specified as individual property
- *  names or arrays of property names.
- * @param {*} [thisArg] The `this` binding of `predicate`.
- * @returns {Object} Returns the new object.
- * @example
- *
- * var object = { 'user': 'fred', 'age': 40 };
- *
- * _.pick(object, 'user');
- * // => { 'user': 'fred' }
- *
- * _.pick(object, _.isString);
- * // => { 'user': 'fred' }
- */
-var pick = restParam(function(object, props) {
-  if (object == null) {
-    return {};
-  }
-  return typeof props[0] == 'function'
-    ? pickByCallback(object, bindCallback(props[0], props[1], 3))
-    : pickByArray(object, baseFlatten(props));
-});
-
-module.exports = pick;
-
-},{"lodash._baseflatten":11,"lodash._bindcallback":16,"lodash._pickbyarray":23,"lodash._pickbycallback":24,"lodash.restparam":42}],42:[function(require,module,exports){
-/**
- * lodash 3.6.1 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-
-/** Used as the `TypeError` message for "Functions" methods. */
-var FUNC_ERROR_TEXT = 'Expected a function';
-
-/* Native method references for those with the same name as other `lodash` methods. */
-var nativeMax = Math.max;
-
-/**
- * Creates a function that invokes `func` with the `this` binding of the
- * created function and arguments from `start` and beyond provided as an array.
- *
- * **Note:** This method is based on the [rest parameter](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/rest_parameters).
- *
- * @static
- * @memberOf _
- * @category Function
- * @param {Function} func The function to apply a rest parameter to.
- * @param {number} [start=func.length-1] The start position of the rest parameter.
- * @returns {Function} Returns the new function.
- * @example
- *
- * var say = _.restParam(function(what, names) {
- *   return what + ' ' + _.initial(names).join(', ') +
- *     (_.size(names) > 1 ? ', & ' : '') + _.last(names);
- * });
- *
- * say('hello', 'fred', 'barney', 'pebbles');
- * // => 'hello fred, barney, & pebbles'
- */
-function restParam(func, start) {
-  if (typeof func != 'function') {
-    throw new TypeError(FUNC_ERROR_TEXT);
-  }
-  start = nativeMax(start === undefined ? (func.length - 1) : (+start || 0), 0);
-  return function() {
-    var args = arguments,
-        index = -1,
-        length = nativeMax(args.length - start, 0),
-        rest = Array(length);
-
-    while (++index < length) {
-      rest[index] = args[start + index];
-    }
-    switch (start) {
-      case 0: return func.call(this, rest);
-      case 1: return func.call(this, args[0], rest);
-      case 2: return func.call(this, args[0], args[1], rest);
-    }
-    var otherArgs = Array(start + 1);
-    index = -1;
-    while (++index < start) {
-      otherArgs[index] = args[index];
-    }
-    otherArgs[start] = rest;
-    return func.apply(this, otherArgs);
-  };
-}
-
-module.exports = restParam;
-
-},{}],43:[function(require,module,exports){
-/**
- * lodash 3.0.0 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.7.0 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseCopy = require('lodash._basecopy'),
-    keysIn = require('lodash.keysin');
-
-/**
- * Converts `value` to a plain object flattening inherited enumerable
- * properties of `value` to own properties of the plain object.
- *
- * @static
- * @memberOf _
- * @category Lang
- * @param {*} value The value to convert.
- * @returns {Object} Returns the converted plain object.
- * @example
- *
- * function Foo() {
- *   this.b = 2;
- * }
- *
- * Foo.prototype.c = 3;
- *
- * _.assign({ 'a': 1 }, new Foo);
- * // => { 'a': 1, 'b': 2 }
- *
- * _.assign({ 'a': 1 }, _.toPlainObject(new Foo));
- * // => { 'a': 1, 'b': 2, 'c': 3 }
- */
-function toPlainObject(value) {
-  return baseCopy(value, keysIn(value));
-}
-
-module.exports = toPlainObject;
-
-},{"lodash._basecopy":9,"lodash.keysin":36}],44:[function(require,module,exports){
-/**
- * lodash 3.2.2 (Custom Build) <https://lodash.com/>
- * Build: `lodash modern modularize exports="npm" -o ./`
- * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
- * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
- * Copyright 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
- * Available under MIT license <https://lodash.com/license>
- */
-var baseCallback = require('lodash._basecallback'),
-    baseUniq = require('lodash._baseuniq'),
-    isIterateeCall = require('lodash._isiterateecall');
-
-/**
- * An implementation of `_.uniq` optimized for sorted arrays without support
- * for callback shorthands and `this` binding.
+ * The base implementation of `_.uniq` without support for callback shorthands
+ * and `this` binding.
  *
  * @private
  * @param {Array} array The array to inspect.
  * @param {Function} [iteratee] The function invoked per iteration.
  * @returns {Array} Returns the new duplicate-value-free array.
  */
-function sortedUniq(array, iteratee) {
-  var seen,
-      index = -1,
+function baseUniq(array, iteratee) {
+  var index = -1,
+      indexOf = baseIndexOf,
       length = array.length,
-      resIndex = -1,
+      isCommon = true,
+      isLarge = isCommon && length >= LARGE_ARRAY_SIZE,
+      seen = isLarge ? createCache() : null,
       result = [];
 
+  if (seen) {
+    indexOf = cacheIndexOf;
+    isCommon = false;
+  } else {
+    isLarge = false;
+    seen = iteratee ? [] : result;
+  }
+  outer:
   while (++index < length) {
     var value = array[index],
         computed = iteratee ? iteratee(value, index, array) : value;
 
-    if (!index || seen !== computed) {
-      seen = computed;
-      result[++resIndex] = value;
+    if (isCommon && value === value) {
+      var seenIndex = seen.length;
+      while (seenIndex--) {
+        if (seen[seenIndex] === computed) {
+          continue outer;
+        }
+      }
+      if (iteratee) {
+        seen.push(computed);
+      }
+      result.push(value);
+    }
+    else if (indexOf(seen, computed, 0) < 0) {
+      if (iteratee || isLarge) {
+        seen.push(computed);
+      }
+      result.push(value);
     }
   }
   return result;
 }
 
-/**
- * Creates a duplicate-free version of an array, using
- * [`SameValueZero`](http://ecma-international.org/ecma-262/6.0/#sec-samevaluezero)
- * for equality comparisons, in which only the first occurence of each element
- * is kept. Providing `true` for `isSorted` performs a faster search algorithm
- * for sorted arrays. If an iteratee function is provided it is invoked for
- * each element in the array to generate the criterion by which uniqueness
- * is computed. The `iteratee` is bound to `thisArg` and invoked with three
- * arguments: (value, index, array).
- *
- * If a property name is provided for `iteratee` the created `_.property`
- * style callback returns the property value of the given element.
- *
- * If a value is also provided for `thisArg` the created `_.matchesProperty`
- * style callback returns `true` for elements that have a matching property
- * value, else `false`.
- *
- * If an object is provided for `iteratee` the created `_.matches` style
- * callback returns `true` for elements that have the properties of the given
- * object, else `false`.
- *
- * @static
- * @memberOf _
- * @alias unique
- * @category Array
- * @param {Array} array The array to inspect.
- * @param {boolean} [isSorted] Specify the array is sorted.
- * @param {Function|Object|string} [iteratee] The function invoked per iteration.
- * @param {*} [thisArg] The `this` binding of `iteratee`.
- * @returns {Array} Returns the new duplicate-value-free array.
- * @example
- *
- * _.uniq([2, 1, 2]);
- * // => [2, 1]
- *
- * // using `isSorted`
- * _.uniq([1, 1, 2], true);
- * // => [1, 2]
- *
- * // using an iteratee function
- * _.uniq([1, 2.5, 1.5, 2], function(n) {
- *   return this.floor(n);
- * }, Math);
- * // => [1, 2.5]
- *
- * // using the `_.property` callback shorthand
- * _.uniq([{ 'x': 1 }, { 'x': 2 }, { 'x': 1 }], 'x');
- * // => [{ 'x': 1 }, { 'x': 2 }]
- */
-function uniq(array, isSorted, iteratee, thisArg) {
-  var length = array ? array.length : 0;
-  if (!length) {
-    return [];
-  }
-  if (isSorted != null && typeof isSorted != 'boolean') {
-    thisArg = iteratee;
-    iteratee = isIterateeCall(array, isSorted, thisArg) ? undefined : isSorted;
-    isSorted = false;
-  }
-  iteratee = iteratee == null ? iteratee : baseCallback(iteratee, thisArg, 3);
-  return (isSorted)
-    ? sortedUniq(array, iteratee)
-    : baseUniq(array, iteratee);
-}
+module.exports = baseUniq;
 
-module.exports = uniq;
-
-},{"lodash._basecallback":7,"lodash._baseuniq":15,"lodash._isiterateecall":22}],45:[function(require,module,exports){
+},{"lodash._baseindexof":156,"lodash._cacheindexof":157,"lodash._createcache":158}],156:[function(require,module,exports){
+arguments[4][88][0].apply(exports,arguments)
+},{"dup":88}],157:[function(require,module,exports){
+arguments[4][89][0].apply(exports,arguments)
+},{"dup":89}],158:[function(require,module,exports){
+arguments[4][90][0].apply(exports,arguments)
+},{"dup":90,"lodash._getnative":159}],159:[function(require,module,exports){
+arguments[4][65][0].apply(exports,arguments)
+},{"dup":65}],160:[function(require,module,exports){
+arguments[4][62][0].apply(exports,arguments)
+},{"dup":62}],161:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],162:[function(require,module,exports){
 /*
  Copyright 2013 Daniel Wirtz <dcode@dcode.io>
  Copyright 2009 The Closure Library Authors. All Rights Reserved.
@@ -8958,7 +19291,7 @@ module.exports = uniq;
     return Long;
 });
 
-},{}],46:[function(require,module,exports){
+},{}],163:[function(require,module,exports){
 /**
  * Advanced Encryption Standard (AES) implementation.
  *
@@ -10056,7 +20389,7 @@ function _createCipher(options) {
 
 })();
 
-},{"./cipher":49,"./cipherModes":50,"./util":75}],47:[function(require,module,exports){
+},{"./cipher":166,"./cipherModes":167,"./util":192}],164:[function(require,module,exports){
 /**
  * A Javascript implementation of AES Cipher Suites for TLS.
  *
@@ -10325,7 +20658,7 @@ function decrypt_aes_cbc_sha1(record, s) {
 
 })();
 
-},{"./aes":46,"./cipher":49,"./tls":74,"./util":75}],48:[function(require,module,exports){
+},{"./aes":163,"./cipher":166,"./tls":191,"./util":192}],165:[function(require,module,exports){
 /**
  * Javascript implementation of Abstract Syntax Notation Number One.
  *
@@ -11393,7 +21726,7 @@ asn1.prettyPrint = function(obj, level, indentation) {
 
 })();
 
-},{"./pki":65,"./util":75}],49:[function(require,module,exports){
+},{"./pki":182,"./util":192}],166:[function(require,module,exports){
 /**
  * Cipher base API.
  *
@@ -11631,7 +21964,7 @@ BlockCipher.prototype.finish = function(pad) {
 
 })();
 
-},{"./util":75}],50:[function(require,module,exports){
+},{"./util":192}],167:[function(require,module,exports){
 /**
  * Supported cipher modes.
  *
@@ -12398,7 +22731,7 @@ function from64To32(num) {
 
 })();
 
-},{"./cipher":49,"./util":75}],51:[function(require,module,exports){
+},{"./cipher":166,"./util":192}],168:[function(require,module,exports){
 /**
  * DES (Data Encryption Standard) implementation.
  *
@@ -12900,7 +23233,7 @@ function _createCipher(options) {
 
 })();
 
-},{"./cipher":49,"./cipherModes":50,"./util":75}],52:[function(require,module,exports){
+},{"./cipher":166,"./cipherModes":167,"./util":192}],169:[function(require,module,exports){
 /**
  * Hash-based Message Authentication Code implementation. Requires a message
  * digest object that can be obtained, for example, from forge.md.sha1 or
@@ -13060,7 +23393,7 @@ hmac.create = function() {
 
 })();
 
-},{"./md":54,"./md5":55,"./sha1":71,"./util":75}],53:[function(require,module,exports){
+},{"./md":171,"./md5":172,"./sha1":188,"./util":192}],170:[function(require,module,exports){
 /**
  * Wrapper for JSBN
  *
@@ -13073,7 +23406,7 @@ hmac.create = function() {
   exports.BigInteger = require("jsbn").BigInteger;
 })();
 
-},{"jsbn":2}],54:[function(require,module,exports){
+},{"jsbn":194}],171:[function(require,module,exports){
 /**
  * Node.js module for Forge message digests.
  *
@@ -13091,7 +23424,7 @@ forge.md.algorithms = {};
 
 })();
 
-},{}],55:[function(require,module,exports){
+},{}],172:[function(require,module,exports){
 /**
  * Message Digest Algorithm 5 with 128-bit digest (MD5) implementation.
  *
@@ -13365,7 +23698,7 @@ function _update(s, w, bytes) {
 }
 })();
 
-},{"./md":54,"./util":75}],56:[function(require,module,exports){
+},{"./md":171,"./util":192}],173:[function(require,module,exports){
 /**
  * Node.js module for Forge mask generation functions.
  *
@@ -13383,7 +23716,7 @@ forge.mgf.mgf1 = require("./mgf1");
 
 })();
 
-},{"./mgf1":57}],57:[function(require,module,exports){
+},{"./mgf1":174}],174:[function(require,module,exports){
 /**
  * Javascript implementation of mask generation function MGF1.
  *
@@ -13447,7 +23780,7 @@ mgf1.create = function(md) {
 
 })();
 
-},{"./mgf":56,"./util":75}],58:[function(require,module,exports){
+},{"./mgf":173,"./util":192}],175:[function(require,module,exports){
 /**
  * Object IDs for ASN.1.
  *
@@ -13668,7 +24001,7 @@ oids['timeStamping'] = '1.3.6.1.5.5.7.3.8';
 
 })();
 
-},{"./pki":65}],59:[function(require,module,exports){
+},{"./pki":182}],176:[function(require,module,exports){
 /**
  * Password-Based Key-Derivation Function #2 implementation.
  *
@@ -13840,7 +24173,7 @@ module.exports = forge.pbkdf2 = pkcs5.pbkdf2 = function(p, s, c, dkLen, md, call
 
 })();
 
-},{"./hmac":52,"./md":54,"./pkcs5":62,"./sha1":71,"./util":75}],60:[function(require,module,exports){
+},{"./hmac":169,"./md":171,"./pkcs5":179,"./sha1":188,"./util":192}],177:[function(require,module,exports){
 /**
  * Javascript implementation of basic PEM (Privacy Enhanced Mail) algorithms.
  *
@@ -14078,7 +24411,7 @@ function ltrim(str) {
 
 })();
 
-},{"./util":75}],61:[function(require,module,exports){
+},{"./util":192}],178:[function(require,module,exports){
 /**
  * Partial implementation of PKCS#1 v2.2: RSA-OEAP
  *
@@ -14365,7 +24698,7 @@ function rsa_mgf1(seed, maskLength, hash) {
 
 })();
 
-},{"./md":54,"./random":69,"./sha1":71,"./util":75}],62:[function(require,module,exports){
+},{"./md":171,"./random":186,"./sha1":188,"./util":192}],179:[function(require,module,exports){
 /**
  * Password-Based Key-Derivation Function #2 implementation.
  *
@@ -14385,7 +24718,7 @@ forge.pkcs5 = require("./pbkdf2");
 
 })();
 
-},{"./pbkdf2":59}],63:[function(require,module,exports){
+},{"./pbkdf2":176}],180:[function(require,module,exports){
 /**
  * Javascript implementation of PKCS#7 v1.5. Currently only certain parts of
  * PKCS#7 are implemented, especially the enveloped-data content type.
@@ -15180,7 +25513,7 @@ p7.createEnvelopedData = function() {
 
 })();
 
-},{"./aes":46,"./asn1":48,"./des":51,"./pem":60,"./pkcs7asn1":64,"./random":69,"./util":75,"./x509":76}],64:[function(require,module,exports){
+},{"./aes":163,"./asn1":165,"./des":168,"./pem":177,"./pkcs7asn1":181,"./random":186,"./util":192,"./x509":193}],181:[function(require,module,exports){
 /**
  * Javascript implementation of PKCS#7 v1.5.  Currently only certain parts of
  * PKCS#7 are implemented, especially the enveloped-data content type.
@@ -15532,7 +25865,7 @@ p7v.recipientInfoValidator = {
 
 })();
 
-},{"./asn1":48,"./pkcs7":63,"./util":75}],65:[function(require,module,exports){
+},{"./asn1":165,"./pkcs7":180,"./util":192}],182:[function(require,module,exports){
 /**
  * Javascript implementation of a basic Public Key Infrastructure, including
  * support for RSA public and private keys.
@@ -15638,7 +25971,7 @@ pki.privateKeyInfoToPem = function(pki, maxline) {
 
 })();
 
-},{"./asn1":48,"./oids":58,"./pem":60,"./util":75}],66:[function(require,module,exports){
+},{"./asn1":165,"./oids":175,"./pem":177,"./util":192}],183:[function(require,module,exports){
 /**
  * Prime number generation API.
  *
@@ -15924,7 +26257,7 @@ function getMillerRabinTests(bits) {
 
 })();
 
-},{"./jsbn":53,"./random":69,"./util":75}],67:[function(require,module,exports){
+},{"./jsbn":170,"./random":186,"./util":192}],184:[function(require,module,exports){
 (function (process){
 /**
  * A javascript implementation of a cryptographically-secure
@@ -16336,7 +26669,7 @@ prng.create = function(plugin) {
 })();
 
 }).call(this,require('_process'))
-},{"./util":75,"_process":159,"crypto":137}],68:[function(require,module,exports){
+},{"./util":192,"_process":223,"crypto":201}],185:[function(require,module,exports){
 /**
  * Javascript implementation of PKCS#1 PSS signature padding.
  *
@@ -16585,7 +26918,7 @@ pss.create = function(options) {
 
 })();
 
-},{"./random":69,"./util":75}],69:[function(require,module,exports){
+},{"./random":186,"./util":192}],186:[function(require,module,exports){
 (function (process){
 /**
  * An API for getting cryptographically-secure random bytes. The bytes are
@@ -16770,7 +27103,7 @@ forge.random.createInstance = spawnPrng;
 })();
 
 }).call(this,require('_process'))
-},{"./aes":46,"./md":54,"./prng":67,"./sha256":72,"./util":75,"_process":159}],70:[function(require,module,exports){
+},{"./aes":163,"./md":171,"./prng":184,"./sha256":189,"./util":192,"_process":223}],187:[function(require,module,exports){
 /**
  * Javascript implementation of basic RSA algorithms.
  *
@@ -18430,7 +28763,7 @@ function _getMillerRabinTests(bits) {
 
 })();
 
-},{"./asn1":48,"./jsbn":53,"./pkcs1":61,"./pki":65,"./prime":66,"./random":69,"./util":75}],71:[function(require,module,exports){
+},{"./asn1":165,"./jsbn":170,"./pkcs1":178,"./pki":182,"./prime":183,"./random":186,"./util":192}],188:[function(require,module,exports){
 /**
  * Secure Hash Algorithm with 160-bit digest (SHA-1) implementation.
  *
@@ -18724,7 +29057,7 @@ function _update(s, w, bytes) {
 }
 })();
 
-},{"./md":54,"./util":75}],72:[function(require,module,exports){
+},{"./md":171,"./util":192}],189:[function(require,module,exports){
 /**
  * Secure Hash Algorithm with 256-bit digest (SHA-256) implementation.
  *
@@ -19029,7 +29362,7 @@ function _update(s, w, bytes) {
 
 })();
 
-},{"./md":54,"./util":75}],73:[function(require,module,exports){
+},{"./md":171,"./util":192}],190:[function(require,module,exports){
 /**
  * Secure Hash Algorithm with a 1024-bit block size implementation.
  *
@@ -19581,7 +29914,7 @@ function _update(s, w, bytes) {
 
 })();
 
-},{"./md":54,"./util":75}],74:[function(require,module,exports){
+},{"./md":171,"./util":192}],191:[function(require,module,exports){
 /**
  * A Javascript implementation of Transport Layer Security (TLS).
  *
@@ -23861,7 +34194,7 @@ forge.tls.createConnection = tls.createConnection;
 
 })();
 
-},{"./asn1":48,"./hmac":52,"./md":54,"./md5":55,"./pem":60,"./random":69,"./sha1":71,"./util":75,"./x509":76}],75:[function(require,module,exports){
+},{"./asn1":165,"./hmac":169,"./md":171,"./md5":172,"./pem":177,"./random":186,"./sha1":188,"./util":192,"./x509":193}],192:[function(require,module,exports){
 (function (process){
 /**
  * Utility functions for web applications.
@@ -26764,7 +37097,7 @@ util.estimateCores = function(options, callback) {
 })();
 
 }).call(this,require('_process'))
-},{"_process":159}],76:[function(require,module,exports){
+},{"_process":223}],193:[function(require,module,exports){
 /**
  * Javascript implementation of X.509 and related components (such as
  * Certification Signing Requests) of a Public Key Infrastructure.
@@ -29895,10168 +40228,12 @@ pki.verifyCertificateChain = function(caStore, chain, verify) {
 
 })();
 
-},{"./asn1":48,"./md":54,"./md5":55,"./mgf":56,"./pem":60,"./pki":65,"./pss":68,"./rsa":70,"./sha1":71,"./sha256":72,"./util":75}],77:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/aes-cbc-hmac-sha2.js - AES-CBC-HMAC-SHA2 Composited Encryption
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var helpers = require("./helpers.js"),
-    HMAC = require("./hmac.js"),
-    sha = require("./sha.js"),
-    forge = require("../deps/forge.js"),
-    DataBuffer = require("../util/databuffer.js"),
-    util = require("../util");
-
-function checkIv(iv) {
-  if (16 !== iv.length) {
-    throw new Error("invalid iv");
-  }
-}
-
-function commonCbcEncryptFN(size) {
-  // ### 'fallback' implementation -- uses forge
-  var fallback = function(encKey, pdata, iv) {
-    try {
-      checkIv(iv);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var promise = Promise.resolve();
-
-    promise = promise.then(function() {
-      var cipher = forge.cipher.createCipher("AES-CBC", new DataBuffer(encKey));
-      cipher.start({
-        iv: new DataBuffer(iv)
-      });
-
-      // TODO: chunk data
-      cipher.update(new DataBuffer(pdata));
-      if (!cipher.finish()) {
-        return Promise.reject(new Error("encryption failed"));
-      }
-
-      var cdata = cipher.output.native();
-      return cdata;
-    });
-
-    return promise;
-  };
-
-  // ### WebCryptoAPI implementation
-  // TODO: cache CryptoKey sooner
-  var webcrypto = function(encKey, pdata, iv) {
-    try {
-      checkIv(iv);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var promise = Promise.resolve();
-
-    promise = promise.then(function() {
-      var alg = {
-        name: "AES-CBC"
-      };
-      return helpers.subtleCrypto.importKey("raw", encKey, alg, true, ["encrypt"]);
-    });
-    promise = promise.then(function(key) {
-      var alg = {
-        name: "AES-CBC",
-        iv: iv
-      };
-      return helpers.subtleCrypto.encrypt(alg, key, pdata);
-    });
-    promise = promise.then(function(cdata) {
-      // wrap in *augmented* Uint8Array -- Buffer without copies
-      cdata = new Uint8Array(cdata);
-      cdata = Buffer._augment(cdata);
-      return cdata;
-    });
-
-    return promise;
-  };
-
-  // ### NodeJS implementation
-  var nodejs = function(encKey, pdata, iv) {
-    try {
-      checkIv(iv);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var promise = Promise.resolve(pdata);
-
-    promise = promise.then(function(pdata) {
-      var name = "AES-" + size + "-CBC";
-      var cipher = helpers.nodeCrypto.createCipheriv(name, encKey, iv);
-      var cdata = Buffer.concat([
-        cipher.update(pdata),
-        cipher.final()
-      ]);
-      return cdata;
-    });
-
-    return promise;
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-function commonCbcDecryptFN(size) {
-  // ### 'fallback' implementation -- uses forge
-  var fallback = function(encKey, cdata, iv) {
-    // validate inputs
-    try {
-      checkIv(iv);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var promise = Promise.resolve();
-
-    promise = promise.then(function() {
-      var cipher = forge.cipher.createDecipher("AES-CBC", new DataBuffer(encKey));
-      cipher.start({
-        iv: new DataBuffer(iv)
-      });
-
-      // TODO: chunk data
-      cipher.update(new DataBuffer(cdata));
-      if (!cipher.finish()) {
-        return Promise.reject(new Error("encryption failed"));
-      }
-
-      var pdata = cipher.output.native();
-      return pdata;
-    });
-
-    return promise;
-  };
-
-  // ### WebCryptoAPI implementation
-  // TODO: cache CryptoKey sooner
-  var webcrypto = function(encKey, cdata, iv) {
-    // validate inputs
-    try {
-      checkIv(iv);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var promise = Promise.resolve();
-
-    promise = promise.then(function() {
-      var alg = {
-        name: "AES-CBC"
-      };
-      return helpers.subtleCrypto.importKey("raw", encKey, alg, true, ["decrypt"]);
-    });
-    promise = promise.then(function(key) {
-      var alg = {
-        name: "AES-CBC",
-        iv: iv
-      };
-      return helpers.subtleCrypto.decrypt(alg, key, cdata);
-    });
-    promise = promise.then(function(pdata) {
-      // wrap in *augmented* Uint8Array -- Buffer without copies
-      pdata = new Uint8Array(pdata);
-      pdata = Buffer._augment(pdata);
-      return pdata;
-    });
-
-    return promise;
-  };
-
-  // ### NodeJS implementation
-  var nodejs = function(encKey, cdata, iv) {
-    // validate inputs
-    try {
-      checkIv(iv);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var promise = Promise.resolve();
-
-    promise = promise.then(function() {
-      var name = "AES-" + size + "-CBC";
-      var cipher = helpers.nodeCrypto.createDecipheriv(name, encKey, iv);
-      var pdata = Buffer.concat([
-        cipher.update(cdata),
-        cipher.final()
-      ]);
-      return pdata;
-    });
-
-    return promise;
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-function checkKey(key, size) {
-  if ((size << 1) !== (key.length << 3)) {
-    throw new Error("invalid encryption key size");
-  }
-}
-
-function cbcHmacEncryptFN(size) {
-  var commonEncrypt = commonCbcEncryptFN(size);
-  return function(key, pdata, props) {
-    // validate inputs
-    try {
-      checkKey(key, size);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var eKey = key.slice(size / 8),
-        iKey = key.slice(0, size / 8),
-        iv = props.iv || new Buffer(0),
-        adata = props.aad || props.adata || new Buffer(0);
-
-    // STEP 1 -- Encrypt
-    var promise = commonEncrypt(eKey, pdata, iv);
-
-    // STEP 2 -- MAC
-    promise = promise.then(function(cdata){
-      var mdata = Buffer.concat([
-        adata,
-        iv,
-        cdata,
-        helpers.int64ToBuffer(adata.length * 8)
-      ]);
-
-      var promise;
-      promise = HMAC["HS" + (size * 2)].sign(iKey, mdata, {
-        loose: true
-      });
-      promise = promise.then(function(result) {
-        // TODO: move slice to hmac.js
-        var tag = result.mac.slice(0, size / 8);
-        return {
-          data: cdata,
-          tag: tag
-        };
-      });
-      return promise;
-    });
-
-    return promise;
-  };
-}
-
-function cbcHmacDecryptFN(size) {
-  var commonDecrypt = commonCbcDecryptFN(size);
-
-  return function(key, cdata, props) {
-    // validate inputs
-    try {
-      checkKey(key, size);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var eKey = key.slice(size / 8),
-        iKey = key.slice(0, size / 8),
-        iv = props.iv || new Buffer(0),
-        adata = props.aad || props.adata || new Buffer(0),
-        tag = props.tag || props.mac || new Buffer(0);
-
-    var promise = Promise.resolve();
-
-    // STEP 1 -- MAC
-    promise = promise.then(function() {
-      var promise;
-      // construct MAC input
-      var mdata = Buffer.concat([
-        adata,
-        iv,
-        cdata,
-        helpers.int64ToBuffer(adata.length * 8)
-      ]);
-      promise = HMAC["HS" + (size * 2)].verify(iKey, mdata, tag, {
-        loose: true
-      });
-      promise = promise.then(function() {
-        return cdata;
-      }, function() {
-        // failure -- invalid tag error
-        throw new Error("mac check failed");
-      });
-      return promise;
-    });
-
-    // STEP 2 -- Decrypt
-    promise = promise.then(function(){
-      return commonDecrypt(eKey, cdata, iv);
-    });
-
-    return promise;
-  };
-}
-
-var EncryptionLabel = new Buffer("Encryption", "utf8");
-var IntegrityLabel = new Buffer("Integrity", "utf8");
-var DotLabel = new Buffer(".", "utf8");
-
-function generateCek(masterKey, alg, epu, epv) {
-  var masterSize = masterKey.length * 8;
-  var cekSize = masterSize / 2;
-  var promise = Promise.resolve();
-
-  promise = promise.then(function(){
-    var input = Buffer.concat([
-      helpers.int32ToBuffer(1),
-      masterKey,
-      helpers.int32ToBuffer(cekSize),
-      new Buffer(alg, "utf8"),
-      epu,
-      epv,
-      EncryptionLabel
-    ]);
-
-    return input;
-  });
-
-  promise = promise.then( function(input) {
-    return sha["SHA-" + masterSize].digest(input).then(function(digest) {
-      return digest.slice(0, cekSize / 8);
-    });
-  });
-  promise = Promise.resolve(promise);
-
-  return promise;
-}
-
-function generateCik(masterKey, alg, epu, epv) {
-  var masterSize = masterKey.length * 8;
-  var cikSize = masterSize;
-  var promise = Promise.resolve();
-
-  promise = promise.then(function(){
-    var input = Buffer.concat([
-      helpers.int32ToBuffer(1),
-      masterKey,
-      helpers.int32ToBuffer(cikSize),
-      new Buffer(alg, "utf8"),
-      epu,
-      epv,
-      IntegrityLabel
-    ]);
-
-    return input;
-  });
-
-  promise = promise.then( function(input) {
-    return sha["SHA-" + masterSize].digest(input).then(function(digest) {
-      return digest.slice(0, cikSize / 8);
-    });
-  });
-  promise = Promise.resolve(promise);
-
-  return promise;
-}
-
-function concatKdfCbcHmacEncryptFN(size, alg) {
-  var commonEncrypt = commonCbcEncryptFN(size);
-
-  return function(key, pdata, props) {
-    var epu = props.epu || helpers.int32ToBuffer(0),
-        epv = props.epv || helpers.int32ToBuffer(0),
-        iv = props.iv || new Buffer(0),
-        adata = props.aad || props.adata || new Buffer(0),
-        kdata = props.kdata || new Buffer(0);
-
-    // Pre Step 1 -- Generate Keys
-    var promises = [
-      generateCek(key, alg, epu, epv),
-      generateCik(key, alg, epu, epv)
-    ];
-
-    var cek,
-        cik;
-    var promise = Promise.all(promises).then(function(keys) {
-      cek = keys[0];
-      cik = keys[1];
-    });
-
-    // STEP 1 -- Encrypt
-    promise = promise.then(function(){
-      return commonEncrypt(cek, pdata, iv);
-    });
-
-    // STEP 2 -- Mac
-    promise = promise.then(function(cdata){
-      var mdata = Buffer.concat([
-        adata,
-        DotLabel,
-        new Buffer(kdata),
-        DotLabel,
-        new Buffer(util.base64url.encode(iv), "utf8"),
-        DotLabel,
-        new Buffer(util.base64url.encode(cdata), "utf8")
-      ]);
-      return Promise.all([
-        Promise.resolve(cdata),
-        HMAC["HS" + (size * 2)].sign(cik, mdata, { loose: false })
-      ]);
-    });
-    promise = promise.then(function(result){
-      return {
-        data: result[0],
-        tag: result[1].mac
-      };
-    });
-
-    return promise;
-  };
-}
-
-function concatKdfCbcHmacDecryptFN(size, alg) {
-  var commonDecrypt = commonCbcDecryptFN(size);
-
-  return function(key, cdata, props) {
-    var epu = props.epu || helpers.int32ToBuffer(0),
-        epv = props.epv || helpers.int32ToBuffer(0),
-        iv = props.iv || new Buffer(0),
-        adata = props.aad || props.adata || new Buffer(0),
-        kdata = props.kdata || new Buffer(0),
-        tag = props.tag || props.mac || new Buffer(0);
-
-    // Pre Step 1 -- Generate Keys
-    var promises = [
-      generateCek(key, alg, epu, epv),
-      generateCik(key, alg, epu, epv)
-    ];
-
-    var cek,
-        cik;
-    var promise = Promise.all(promises).then(function(keys){
-      cek = keys[0];
-      cik = keys[1];
-    });
-
-
-    // STEP 1 -- MAC
-    promise = promise.then(function() {
-      // construct MAC input
-      var mdata = Buffer.concat([
-        adata,
-        DotLabel,
-        new Buffer(kdata),
-        DotLabel,
-        new Buffer(util.base64url.encode(iv), "utf8"),
-        DotLabel,
-        new Buffer(util.base64url.encode(cdata), "utf8")
-      ]);
-
-      try {
-        return HMAC["HS" + (size * 2)].verify(cik, mdata, tag, {
-          loose: false
-        });
-      } catch (e) {
-        throw new Error("mac check failed");
-      }
-    });
-
-    // STEP 2 -- Decrypt
-    promise = promise.then(function(){
-      return commonDecrypt(cek, cdata, iv);
-    });
-
-    return promise;
-  };
-}
-
-// ### Public API
-// * [name].encrypt
-// * [name].decrypt
-var aesCbcHmacSha2 = {};
-[
-  "A128CBC-HS256",
-  "A192CBC-HS384",
-  "A256CBC-HS512"
-].forEach(function(alg) {
-  var size = parseInt(/A(\d+)CBC-HS(\d+)?/g.exec(alg)[1]);
-  aesCbcHmacSha2[alg] = {
-    encrypt: cbcHmacEncryptFN(size),
-    decrypt: cbcHmacDecryptFN(size)
-  };
-});
-
-[
-  "A128CBC+HS256",
-  "A192CBC+HS384",
-  "A256CBC+HS512"
-].forEach(function(alg) {
-  var size = parseInt(/A(\d+)CBC\+HS(\d+)?/g.exec(alg)[1]);
-  aesCbcHmacSha2[alg] = {
-    encrypt: concatKdfCbcHmacEncryptFN(size, alg),
-    decrypt: concatKdfCbcHmacDecryptFN(size, alg)
-  };
-});
-
-module.exports = aesCbcHmacSha2;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"../util":128,"../util/databuffer.js":127,"./helpers.js":86,"./hmac.js":88,"./sha.js":94,"buffer":140}],78:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/aes-gcm.js - AES-GCM Encryption and Key-Wrapping
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var helpers = require("./helpers.js"),
-    CONSTANTS = require("./constants.js"),
-    GCM = require("../deps/ciphermodes/gcm");
-
-function gcmEncryptFN(size) {
-  function commonChecks(key, iv) {
-    if (size !== (key.length << 3)) {
-       throw new Error("invalid key size");
-    }
-    if (12 !== iv.length) {
-      throw new Error("invalid iv");
-    }
-  }
-
-  // ### 'fallback' implementation -- uses forge
-  var fallback = function(key, pdata, props) {
-    var iv = props.iv || new Buffer(0),
-        adata = props.aad || props.adata || new Buffer(0),
-        cipher,
-        cdata;
-
-    // validate inputs
-    try {
-      commonChecks(key, iv, adata);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    // setup cipher
-    cipher = GCM.createCipher({
-      key: key,
-      iv: iv,
-      additionalData: adata
-    });
-    // ciphertext is the same length as plaintext
-    cdata = new Buffer(pdata.length);
-
-    var promise = new Promise(function(resolve, reject) {
-      var amt = CONSTANTS.CHUNK_SIZE,
-          clen = 0,
-          poff = 0;
-
-      (function doChunk() {
-        var plen = Math.min(amt, pdata.length - poff);
-        clen += cipher.update(pdata,
-                              poff,
-                              plen,
-                              cdata,
-                              clen);
-        poff += plen;
-        if (pdata.length > poff) {
-          setTimeout(doChunk, 0);
-          return;
-        }
-
-        // finish it
-        clen += cipher.finish(cdata, clen);
-        if (clen !== pdata.length) {
-          reject(new Error("encryption failed"));
-          return;
-        }
-
-        // resolve with output
-        var tag = cipher.tag;
-        resolve({
-          data: cdata,
-          tag: tag
-        });
-      })();
-    });
-
-    return promise;
-  };
-
-  // ### WebCryptoAPI implementation
-  // TODO: cache CryptoKey sooner
-  var webcrypto = function(key, pdata, props) {
-    var iv = props.iv || new Buffer(0),
-        adata = props.aad || props.adata || new Buffer(0);
-
-    try {
-      commonChecks(key, iv, adata);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var alg = {
-      name: "AES-GCM"
-    };
-    var promise;
-    promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["encrypt"]);
-    promise = promise.then(function(key) {
-      alg.iv = iv;
-      alg.tagLength = 128;
-      if (adata.length) {
-        alg.additionalData = adata;
-      }
-
-      return helpers.subtleCrypto.encrypt(alg, key, pdata);
-    });
-    promise = promise.then(function(result) {
-      var tagStart = result.byteLength - 16;
-
-      // wrap in *augmented* Uint8Array -- Buffer without copies
-      var tag = result.slice(tagStart);
-      tag = new Uint8Array(tag);
-      tag = Buffer._augment(tag);
-
-      // wrap in *augmented* Uint8Array -- Buffer without copies
-      var cdata = result.slice(0, tagStart);
-      cdata = new Uint8Array(cdata);
-      cdata = Buffer._augment(cdata);
-
-      return {
-        data: cdata,
-        tag: tag
-      };
-    });
-
-    return promise;
-  };
-
-  // ### NodeJS implementation
-  var nodejs = function(key, pdata, props) {
-    var iv = props.iv || new Buffer(0),
-        adata = props.aad || props.adata || new Buffer(0);
-
-    try {
-      commonChecks(key, iv, adata);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var alg = "aes-" + (key.length * 8) + "-gcm";
-    var cipher;
-    try {
-      cipher = helpers.nodeCrypto.createCipheriv(alg, key, iv);
-    } catch (err) {
-      throw new Error("unsupported algorithm: " + alg);
-    }
-    if ("function" !== typeof cipher.setAAD) {
-      throw new Error("unsupported algorithm: " + alg);
-    }
-    if (adata.length) {
-      cipher.setAAD(adata);
-    }
-
-    var cdata = Buffer.concat([
-      cipher.update(pdata),
-      cipher.final()
-    ]);
-    var tag = cipher.getAuthTag();
-
-    return {
-      data: cdata,
-      tag: tag
-    };
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-function gcmDecryptFN(size) {
-  function commonChecks(key, iv, tag) {
-    if (size !== (key.length << 3)) {
-      throw new Error("invalid key size");
-    }
-    if (12 !== iv.length) {
-      throw new Error("invalid iv");
-    }
-    if (16 !== tag.length) {
-      throw new Error("invalid tag length");
-    }
-  }
-
-  // ### fallback implementation -- uses forge
-  var fallback = function(key, cdata, props) {
-    var adata = props.aad || props.adata || new Buffer(0),
-        iv = props.iv || new Buffer(0),
-        tag = props.tag || props.mac || new Buffer(0),
-        cipher,
-        pdata;
-
-    // validate inputs
-    try {
-      commonChecks(key, iv, tag);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    // setup cipher
-    cipher = GCM.createDecipher({
-      key: key,
-      iv: iv,
-      additionalData: adata,
-      tag: tag
-    });
-    // plaintext is the same length as ciphertext
-    pdata = new Buffer(cdata.length);
-
-    var promise = new Promise(function(resolve, reject) {
-      var amt = CONSTANTS.CHUNK_SIZE,
-          plen = 0,
-          coff = 0;
-
-      (function doChunk() {
-        var clen = Math.min(amt, cdata.length - coff);
-        plen += cipher.update(cdata,
-                              coff,
-                              clen,
-                              pdata,
-                              plen);
-        coff += clen;
-        if (cdata.length > coff) {
-          setTimeout(doChunk, 0);
-          return;
-        }
-
-        try {
-          plen += cipher.finish(pdata, plen);
-        } catch (err) {
-          reject(new Error("decryption failed"));
-          return;
-        }
-
-        if (plen !== cdata.length) {
-          reject(new Error("decryption failed"));
-          return;
-        }
-
-        // resolve with output
-        resolve(pdata);
-      })();
-    });
-
-    return promise;
-  };
-
-  // ### WebCryptoAPI implementation
-  // TODO: cache CryptoKey sooner
-  var webcrypto = function(key, cdata, props) {
-    var adata = props.aad || props.adata || new Buffer(0),
-        iv = props.iv || new Buffer(0),
-        tag = props.tag || props.mac || new Buffer(0);
-
-    // validate inputs
-    try {
-      commonChecks(key, iv, tag);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var alg = {
-      name: "AES-GCM"
-    };
-    var promise;
-    promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["decrypt"]);
-    promise = promise.then(function(key) {
-      alg.iv = iv;
-      alg.tagLength = 128;
-      if (adata.length) {
-        alg.additionalData = adata;
-      }
-
-      // concatenate cdata and tag
-      cdata = Buffer.concat([cdata, tag], cdata.length + tag.length);
-
-      return helpers.subtleCrypto.decrypt(alg, key, cdata);
-    });
-    promise = promise.then(function(pdata) {
-      // wrap *augmented* Uint8Array -- Buffer without copies
-      pdata = new Uint8Array(pdata);
-      pdata = Buffer._augment(pdata);
-      return pdata;
-    });
-
-    return promise;
-  };
-
-  var nodejs = function(key, cdata, props) {
-    var adata = props.aad || props.adata || new Buffer(0),
-        iv = props.iv || new Buffer(0),
-        tag = props.tag || props.mac || new Buffer(0);
-
-    // validate inputs
-    try {
-      commonChecks(key, iv, tag);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var alg = "aes-" + (key.length * 8) + "-gcm";
-    var cipher;
-    try {
-      cipher = helpers.nodeCrypto.createDecipheriv(alg, key, iv);
-    } catch(err) {
-      throw new Error("unsupported algorithm: " + alg);
-    }
-    if ("function" !== typeof cipher.setAAD) {
-      throw new Error("unsupported algorithm: " + alg);
-    }
-    cipher.setAuthTag(tag);
-    if (adata.length) {
-      cipher.setAAD(adata);
-    }
-
-    try {
-      var pdata = Buffer.concat([
-        cipher.update(cdata),
-        cipher.final()
-      ]);
-
-      return pdata;
-    } catch (err) {
-      throw new Error("decryption failed");
-    }
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-// ### Public API
-// * [name].encrypt
-// * [name].decrypt
-var aesGcm = {};
-[
-  "A128GCM",
-  "A192GCM",
-  "A256GCM",
-  "A128GCMKW",
-  "A192GCMKW",
-  "A256GCMKW"
-].forEach(function(alg) {
-  var size = parseInt(/A(\d+)GCM(?:KW)?/g.exec(alg)[1]);
-  aesGcm[alg] = {
-    encrypt: gcmEncryptFN(size),
-    decrypt: gcmDecryptFN(size)
-  };
-});
-
-module.exports = aesGcm;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/ciphermodes/gcm":96,"./constants.js":81,"./helpers.js":86,"buffer":140}],79:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/aes-kw.js - AES-KW Key-Wrapping
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var helpers = require("./helpers.js"),
-    forge = require("../deps/forge.js"),
-    DataBuffer = require("../util/databuffer.js");
-
-var A0 = new Buffer("a6a6a6a6a6a6a6a6", "hex");
-
-// ### helpers
-function xor(a, b) {
-  var len = Math.max(a.length, b.length);
-  var result = new Buffer(len);
-  for (var idx = 0; len > idx; idx++) {
-    result[idx] = (a[idx] || 0) ^ (b[idx] || 0);
-  }
-  return result;
-}
-
-function split(input, size) {
-  var output = [];
-  for (var idx = 0; input.length > idx; idx += size) {
-    output.push(input.slice(idx, idx + size));
-  }
-  return output;
-}
-
-function longToBigEndian(input) {
-  var hi = Math.floor(input / 4294967296),
-      lo = input % 4294967296;
-  var output = new Buffer(8);
-  output[0] = 0xff & (hi >>> 24);
-  output[1] = 0xff & (hi >>> 16);
-  output[2] = 0xff & (hi >>> 8);
-  output[3] = 0xff & (hi >>> 0);
-  output[4] = 0xff & (lo >>> 24);
-  output[5] = 0xff & (lo >>> 16);
-  output[6] = 0xff & (lo >>> 8);
-  output[7] = 0xff & (lo >>> 0);
-  return output;
-}
-
-function kwEncryptFN(size) {
-  function commonChecks(key, data) {
-    if (size !== (key.length << 3)) {
-      throw new Error("invalid key size");
-    }
-    if (0 < data.length && 0 !== (data.length % 8)) {
-      throw new Error("invalid data length");
-    }
-  }
-
-  // ### 'fallback' implementation -- uses forge
-  var fallback = function(key, pdata) {
-    try {
-      commonChecks(key, pdata);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    // setup cipher
-    var cipher = forge.cipher.createCipher("AES", new DataBuffer(key));
-
-    // split input into chunks
-    var R = split(pdata, 8);
-    var A,
-        B,
-        count;
-    A = A0;
-    for (var jdx = 0; 6 > jdx; jdx++) {
-      for (var idx = 0; R.length > idx; idx++) {
-        count = (R.length * jdx) + idx + 1;
-        B = Buffer.concat([A, R[idx]]);
-        cipher.start();
-        cipher.update(new DataBuffer(B));
-        cipher.finish();
-        B = cipher.output.native();
-
-        A = xor(B.slice(0, 8),
-                longToBigEndian(count));
-        R[idx] = B.slice(8, 16);
-      }
-    }
-    R = [A].concat(R);
-    var cdata = Buffer.concat(R);
-    return Promise.resolve({
-      data: cdata
-    });
-  };
-  // ### WebCryptoAPI implementation
-  var webcrypto = function(key, pdata) {
-    try {
-      commonChecks(key, pdata);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var alg = {
-      name: "AES-KW"
-    };
-    var promise = [
-      helpers.subtleCrypto.importKey("raw", pdata, { name: "HMAC", hash: "SHA-256" }, true, ["sign"]),
-      helpers.subtleCrypto.importKey("raw", key, alg, true, ["wrapKey"])
-    ];
-    promise = Promise.all(promise);
-    promise = promise.then(function(keys) {
-      return helpers.subtleCrypto.wrapKey("raw",
-                                          keys[0], // key
-                                          keys[1], // wrappingKey
-                                          alg);
-    });
-    promise = promise.then(function(result) {
-      // wrap in *augmented* Uint8Array -- Buffer without copies
-      result = new Uint8Array(result);
-      result = Buffer._augment(result);
-
-      return {
-        data: result
-      };
-    });
-    return promise;
-  };
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-function kwDecryptFN(size) {
-  function commonChecks(key, data) {
-    if (size !== (key.length << 3)) {
-      throw new Error("invalid key size");
-    }
-    if (0 < (data.length - 8) && 0 !== (data.length % 8)) {
-      throw new Error("invalid data length");
-    }
-  }
-
-  // ### 'fallback' implementation -- uses forge
-  var fallback = function(key, cdata) {
-    try {
-      commonChecks(key, cdata);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    // setup cipher
-    var cipher = forge.cipher.createDecipher("AES", new DataBuffer(key));
-
-    // prepare inputs
-    var R = split(cdata, 8),
-        A,
-        B,
-        count;
-    A = R[0];
-    R = R.slice(1);
-    for (var jdx = 5; 0 <= jdx; --jdx) {
-      for (var idx = R.length - 1; 0 <= idx; --idx) {
-        count = (R.length * jdx) + idx + 1;
-        B = xor(A,
-                longToBigEndian(count));
-        B = Buffer.concat([B, R[idx]]);
-        cipher.start();
-        cipher.update(new DataBuffer(B));
-        cipher.finish();
-        B = cipher.output.native();
-
-        A = B.slice(0, 8);
-        R[idx] = B.slice(8, 16);
-      }
-    }
-    if (A.toString() !== A0.toString()) {
-      return Promise.reject(new Error("decryption failed"));
-    }
-    var pdata = Buffer.concat(R);
-    return Promise.resolve(pdata);
-  };
-  // ### WebCryptoAPI implementation
-  var webcrypto = function(key, cdata) {
-    try {
-      commonChecks(key, cdata);
-    } catch (err) {
-      return Promise.reject(err);
-    }
-
-    var alg = {
-      name: "AES-KW"
-    };
-    var promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["unwrapKey"]);
-    promise = promise.then(function(key) {
-      return helpers.subtleCrypto.unwrapKey("raw", cdata, key, alg, {name: "HMAC", hash: "SHA-256"}, true, ["sign"]);
-    });
-    promise = promise.then(function(result) {
-      // unwrapped CryptoKey -- extract raw
-      return helpers.subtleCrypto.exportKey("raw", result);
-    });
-    promise = promise.then(function(result) {
-      // wrap in *augmented* Uint8Array -- Buffer without copies
-      result = new Uint8Array(result);
-      result = Buffer._augment(result);
-      return result;
-    });
-    return promise;
-  };
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-
-// ### Public API
-// * [name].encrypt
-// * [name].decrypt
-var aesKw = {};
-[
-  "A128KW",
-  "A192KW",
-  "A256KW"
-].forEach(function(alg) {
-  var size = parseInt(/A(\d+)KW/g.exec(alg)[1]);
-  aesKw[alg] = {
-    encrypt: kwEncryptFN(size),
-    decrypt: kwDecryptFN(size)
-  };
-});
-
-module.exports = aesKw;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"../util/databuffer.js":127,"./helpers.js":86,"buffer":140}],80:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/concat.js - Concat Key Derivation
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var CONSTANTS = require("./constants.js"),
-    sha = require("./sha.js");
-
-function concatDeriveFn(name) {
-  name = name.replace("CONCAT-", "");
-
-  // NOTE: no nodejs/webcrypto/fallback model, since ConcatKDF is
-  //       implemented using the SHA algorithms
-
-  var fn = function(key, props) {
-    props = props || {};
-
-    var keyLen = props.length,
-        hashLen = CONSTANTS.HASHLENGTH[name];
-    if (!keyLen) {
-      return Promise.reject("invalid key length");
-    }
-
-    // setup otherInfo
-    if (!props.otherInfo) {
-      return Promise.reject(new Error("invalid otherInfo"));
-    }
-    var otherInfo = props.otherInfo;
-
-    var op = sha[name].digest;
-    var N = Math.ceil(keyLen / hashLen),
-        idx = 0,
-        okm = [];
-    function step() {
-      if (N === idx++) {
-        return Buffer.concat(okm).slice(0, keyLen);
-      }
-
-      var T = new Buffer(4 + key.length + otherInfo.length);
-      T.writeUInt32BE(idx, 0);
-      key.copy(T, 4);
-      otherInfo.copy(T, 4 + key.length);
-      return op(T).then(function(result) {
-        okm.push(result);
-        return step();
-      });
-    }
-
-    return step();
-  };
-
-  return fn;
-}
-
-// Public API
-// * [name].derive
-var concat = {};
-[
-  "CONCAT-SHA-1",
-  "CONCAT-SHA-256",
-  "CONCAT-SHA-384",
-  "CONCAT-SHA-512"
-].forEach(function(name) {
-  concat[name] = {
-    derive: concatDeriveFn(name)
-  };
-});
-
-module.exports = concat;
-
-}).call(this,require("buffer").Buffer)
-},{"./constants.js":81,"./sha.js":94,"buffer":140}],81:[function(require,module,exports){
-/*!
- * algorithms/constants.js - Constants used in Cryptographic Algorithms
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
- "use strict";
-
-module.exports = {
-  CHUNK_SIZE: 1024,
-  HASHLENGTH: {
-    "SHA-1": 160,
-    "SHA-256": 256,
-    "SHA-384": 384,
-    "SHA-512": 512
-  },
-  ENCLENGTH: {
-    "AES-128-CBC": 128,
-    "AES-192-CBC": 192,
-    "AES-256-CBC": 256,
-    "AES-128-KW": 128,
-    "AES-192-KW": 192,
-    "AES-256-KW": 256
-  },
-  KEYLENGTH: {
-    "A128CBC-HS256": 256,
-    "A192CBC-HS384": 384,
-    "A256CBC-HS512": 512,
-    "A128CBC+HS256": 256,
-    "A192CBC+HS384": 384,
-    "A256CBC+HS512": 512,
-    "A128GCM": 128,
-    "A192GCM": 192,
-    "A256GCM": 256,
-    "A128KW": 128,
-    "A192KW": 192,
-    "A256KW": 256,
-    "ECDH-ES+A128KW": 128,
-    "ECDH-ES+A192KW": 192,
-    "ECDH-EC+A256KW": 256
-  },
-  NONCELENGTH: {
-    "A128CBC-HS256": 128,
-    "A192CBC-HS384": 128,
-    "A256CBC-HS512": 128,
-    "A128CBC+HS256": 128,
-    "A192CBC+HS384": 128,
-    "A256CBC+HS512": 128,
-    "A128GCM": 96,
-    "A192GCM": 96,
-    "A256GCM": 96
-  }
-};
-
-},{}],82:[function(require,module,exports){
-/*!
- * algorithms/dir.js - Direct key mode
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-function dirEncryptFN(key) {
-  // NOTE: pdata unused
-  // NOTE: props unused
-  return Promise.resolve({
-    data: key,
-    once: true,
-    direct: true
-  });
-}
-function dirDecryptFN(key) {
-  // NOTE: pdata unused
-  // NOTE: props unused
-  return Promise.resolve(key);
-}
-
-// ### Public API
-// * [name].encrypt
-// * [name].decrypt
-var direct = {
-  dir: {
-    encrypt: dirEncryptFN,
-    decrypt: dirDecryptFN
-  }
-};
-
-module.exports = direct;
-
-},{}],83:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/ec-util.js - Elliptic Curve Utility Functions
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var clone = require("lodash.clone"),
-    ecc = require("../deps/ecc"),
-    forge = require("../deps/forge.js"),
-    util = require("../util");
-
-var EC_KEYSIZES = {
-  "P-256": 256,
-  "P-384": 384,
-  "P-521": 521
-};
-
-function convertToForge(key, isPublic) {
-  var parts = isPublic ?
-              ["x", "y"] :
-              ["d"];
-  parts = parts.map(function(f) {
-    return new forge.jsbn.BigInteger(key[f].toString("hex"), 16);
-  });
-  // prefix with curve
-  parts = [key.crv].concat(parts);
-  var fn = isPublic ?
-           ecc.asPublicKey :
-           ecc.asPrivateKey;
-  return fn.apply(ecc, parts);
-}
-
-function convertToJWK(key, isPublic) {
-  var result = clone(key);
-  var parts = isPublic ?
-              ["x", "y"] :
-              ["x", "y", "d"];
-  parts.forEach(function(f) {
-    result[f] = util.base64url.encode(result[f]);
-  });
-
-  // remove potentially troublesome properties
-  delete result.key_ops;
-  delete result.use;
-  delete result.alg;
-
-  if (isPublic) {
-    delete result.d;
-  }
-
-  return result;
-}
-
-function convertToObj(key, isPublic) {
-  var result = clone(key);
-  var parts = isPublic ?
-              ["x", "y"] :
-              ["d"];
-  parts.forEach(function(f) {
-    // assume string if base64url-encoded
-    result[f] = util.asBuffer(result[f], "base64url");
-  });
-
-  return result;
-}
-
-var UNCOMPRESSED = new Buffer([0x04]);
-function convertToBuffer(key, isPublic) {
-  key = convertToObj(key, isPublic);
-  var result = isPublic ?
-               Buffer.concat([UNCOMPRESSED, key.x, key.y]) :
-               key.d;
-  return result;
-}
-
-function curveSize(crv) {
-  return EC_KEYSIZES[crv || ""] || NaN;
-}
-
-module.exports = {
-  convertToForge: convertToForge,
-  convertToJWK: convertToJWK,
-  convertToObj: convertToObj,
-  convertToBuffer: convertToBuffer,
-  curveSize: curveSize
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/ecc":101,"../deps/forge.js":103,"../util":128,"buffer":140,"lodash.clone":27}],84:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/ecdh.js - Elliptic Curve Diffie-Hellman algorithms
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var clone = require("lodash.clone"),
-    merge = require("../util/merge"),
-    omit = require("lodash.omit"),
-    pick = require("lodash.pick"),
-    util = require("../util"),
-    ecUtil = require("./ec-util.js"),
-    hkdf = require("./hkdf.js"),
-    concat = require("./concat.js"),
-    aesKw = require("./aes-kw.js"),
-    helpers = require("./helpers.js"),
-    CONSTANTS = require("./constants.js");
-
-function idealHash(curve) {
-  switch (curve) {
-    case "P-256":
-      return "SHA-256";
-    case "P-384":
-      return "SHA-384";
-    case "P-521":
-      return "SHA-512";
-    default:
-      throw new Error("unsupported curve: " + curve);
-  }
-}
-
-// ### Exported
-var ecdh = module.exports = {};
-
-// ### Derivation algorithms
-// ### "raw" ECDH
-function ecdhDeriveFn() {
-  var alg = {
-    name: "ECDH"
-  };
-
-  // ### fallback implementation -- uses ecc + forge
-  var fallback = function(key, props) {
-    props = props || {};
-    var keyLen = props.length || 0;
-    // assume {key} is privateKey
-    var privKey = ecUtil.convertToForge(key, false);
-    // assume {props.public} is publicKey
-    if (!props.public) {
-      return Promise.reject(new Error("invalid EC public key"));
-    }
-    var pubKey = ecUtil.convertToForge(props.public, true);
-    var secret = privKey.computeSecret(pubKey);
-    if (keyLen) {
-      // truncate to requested key length
-      if (secret.length < keyLen) {
-        return Promise.reject(new Error("key length too large: " + keyLen));
-      }
-      secret = secret.slice(0, keyLen);
-    }
-    return Promise.resolve(secret);
-  };
-
-  // ### WebCryptoAPI implementation
-  // TODO: cache CryptoKey sooner
-  var webcrypto = function(key, props) {
-    key = key || {};
-    props = props || {};
-
-    var keyLen = props.length || 0,
-        algParams = merge(clone(alg), {
-          namedCurve: key.crv
-        });
-
-    // assume {key} is privateKey
-    if (!keyLen) {
-      // calculate key length from private key size
-      keyLen = key.d.length;
-    }
-    var privKey = ecUtil.convertToJWK(key, false);
-    privKey = helpers.subtleCrypto.importKey("jwk",
-                                             privKey,
-                                             algParams,
-                                             false,
-                                             [ "deriveBits" ]);
-
-    // assume {props.public} is publicKey
-    if (!props.public) {
-      return Promise.reject(new Error("invalid EC public key"));
-    }
-    var pubKey = ecUtil.convertToJWK(props.public, true);
-    pubKey = helpers.subtleCrypto.importKey("jwk",
-                                            pubKey,
-                                            algParams,
-                                            false,
-                                            []);
-
-    var promise = Promise.all([privKey, pubKey]);
-    promise = promise.then(function(keypair) {
-      var privKey = keypair[0],
-          pubKey = keypair[1];
-
-      var algParams = merge(clone(alg), {
-        public: pubKey
-      });
-      return helpers.subtleCrypto.deriveBits(algParams, privKey, keyLen * 8);
-    });
-    promise = promise.then(function(result) {
-      result = new Uint8Array(result);
-      Buffer._augment(result);
-      return result;
-    });
-    return promise;
-  };
-
-  var nodejs = function(key, props) {
-    if ("function" !== typeof helpers.nodeCrypto.createECDH) {
-      throw new Error("unsupported algorithm: ECDH");
-    }
-
-    props = props || {};
-    var keyLen = props.length || 0;
-    var curve;
-    switch (key.crv) {
-      case "P-256":
-        curve = "prime256v1";
-        break;
-      case "P-384":
-        curve = "secp384r1";
-        break;
-      case "P-521":
-        curve = "secp521r1";
-        break;
-      default:
-        return Promise.reject(new Error("invalid curve: " + curve));
-    }
-
-    // assume {key} is privateKey
-    var privKey = ecUtil.convertToBuffer(key, false);
-
-    // assume {props.public} is publicKey
-    var pubKey = ecUtil.convertToBuffer(props.public, true);
-
-    var ecdh = helpers.nodeCrypto.createECDH(curve);
-    // dummy call so computeSecret doesn't fail
-    ecdh.generateKeys();
-    ecdh.setPrivateKey(privKey);
-    var secret = ecdh.computeSecret(pubKey);
-    if (keyLen) {
-      if (secret.length < keyLen) {
-        return Promise.reject(new Error("key length too large: " + keyLen));
-      }
-      secret = secret.slice(0, keyLen);
-    }
-    return Promise.resolve(secret);
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-function ecdhConcatDeriveFn() {
-  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
-  //       implemented using other primitives
-
-  var fn = function(key, props) {
-    props = props || {};
-
-    var hash;
-    try {
-      hash = props.hash || idealHash(key.crv);
-      if (!hash) {
-        throw new Error("invalid hash: " + hash);
-      }
-      hash.toUpperCase();
-    } catch (ex) {
-      return Promise.reject(ex);
-    }
-
-    var params = ["public"];
-    // derive shared secret
-    // NOTE: whitelist items from {props} for ECDH
-    var promise = ecdh.ECDH.derive(key, pick(props, params));
-    // expand
-    promise = promise.then(function(shared) {
-      // NOTE: blacklist items from {props} for ECDH
-      return concat["CONCAT-" + hash].derive(shared, omit(props, params));
-    });
-    return promise;
-  };
-
-  return fn;
-}
-
-function ecdhHkdfDeriveFn() {
-  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
-  //       implemented using other primitives
-
-  var fn = function(key, props) {
-    props = props || {};
-
-    var hash;
-    try {
-      hash = props.hash || idealHash(key.crv);
-      if (!hash) {
-        throw new Error("invalid hash: " + hash);
-      }
-      hash.toUpperCase();
-    } catch (ex) {
-      return Promise.reject(ex);
-    }
-
-    var params = ["public"];
-    // derive shared secret
-    // NOTE: whitelist items from {props} for ECDH
-    var promise = ecdh.ECDH.derive(key, pick(props, params));
-    // extract-and-expand
-    promise = promise.then(function(shared) {
-      // NOTE: blacklist items from {props} for ECDH
-      return hkdf["HKDF-" + hash].derive(shared, omit(props, params));
-    });
-    return promise;
-  };
-
-  return fn;
-}
-
-// ### Wrap/Unwrap algorithms
-function doEcdhesCommonDerive(privKey, pubKey, props) {
-  function prependLen(input) {
-    return Buffer.concat([
-      helpers.int32ToBuffer(input.length),
-      input
-    ]);
-  }
-
-  var algId = props.algorithm || "",
-      keyLen = CONSTANTS.KEYLENGTH[algId],
-      apu = util.asBuffer(props.apu || "", "base64url"),
-      apv = util.asBuffer(props.apv || "", "base64url");
-  var otherInfo = Buffer.concat([
-    prependLen(new Buffer(algId, "utf8")),
-    prependLen(apu),
-    prependLen(apv),
-    helpers.int32ToBuffer(keyLen)
-  ]);
-
-  var params = {
-    public: pubKey,
-    length: keyLen / 8,
-    hash: "SHA-256",
-    otherInfo: otherInfo
-  };
-  return ecdh["ECDH-CONCAT"].derive(privKey, params);
-}
-
-function ecdhesDirEncryptFn() {
-  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
-  //       implemented using other primitives
-  var fn = function(key, pdata, props) {
-    props = props || {};
-
-    // {props.epk} is private
-    if (!props.epk || !props.epk.d) {
-      return Promise.reject(new Error("missing ephemeral private key"));
-    }
-    var epk = ecUtil.convertToObj(props.epk, false);
-
-    // {key} is public
-    if (!key || !key.x || !key.y) {
-      return Promise.reject(new Error("missing static public key"));
-    }
-    var spk = ecUtil.convertToObj(key, true);
-
-    // derive ECDH shared
-    var promise = doEcdhesCommonDerive(epk, spk, {
-      algorithm: props.enc,
-      apu: props.apu,
-      apv: props.apv
-    });
-    promise = promise.then(function(shared) {
-      return {
-        data: shared,
-        once: true,
-        direct: true
-      };
-    });
-    return promise;
-  };
-
-  return fn;
-}
-function ecdhesDirDecryptFn() {
-  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
-  //       implemented using other primitives
-  var fn = function(key, cdata, props) {
-    props = props || {};
-
-    // {props.epk} is public
-    if (!props.epk || !props.epk.x || !props.epk.y) {
-      return Promise.reject(new Error("missing ephemeral public key"));
-    }
-    var epk = ecUtil.convertToObj(props.epk, true);
-
-    // {key} is private
-    if (!key || !key.d) {
-      return Promise.reject(new Error("missing static private key"));
-    }
-    var spk = ecUtil.convertToObj(key, false);
-
-    // derive ECDH shared
-    var promise = doEcdhesCommonDerive(spk, epk, {
-      algorithm: props.enc,
-      apu: props.apu,
-      apv: props.apv
-    });
-    promise = promise.then(function(shared) {
-      return shared;
-    });
-    return promise;
-  };
-
-  return fn;
-}
-
-function ecdhesKwEncryptFn(wrap) {
-  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
-  //       implemented using other primitives
-  var fn = function(key, pdata, props) {
-    props = props || {};
-
-    // {props.epk} is private
-    if (!props.epk || !props.epk.d) {
-      return Promise.reject(new Error("missing ephemeral private key"));
-    }
-    var epk = ecUtil.convertToObj(props.epk, false);
-
-    // {key} is public
-    if (!key || !key.x || !key.y) {
-      return Promise.reject(new Error("missing static public key"));
-    }
-    var spk = ecUtil.convertToObj(key, true);
-
-    // derive ECDH shared
-    var promise = doEcdhesCommonDerive(epk, spk, {
-      algorithm: props.alg,
-      apu: props.apu,
-      apv: props.apv
-    });
-    promise = promise.then(function(shared) {
-      // wrap provided key with ECDH shared
-      return wrap(shared, pdata);
-    });
-    return promise;
-  };
-
-  return fn;
-}
-
-function ecdhesKwDecryptFn(unwrap) {
-  // NOTE: no nodejs/webcrypto/fallback model, since this algorithm is
-  //       implemented using other primitives
-  var fn = function(key, cdata, props) {
-    props = props || {};
-
-    // {props.epk} is public
-    if (!props.epk || !props.epk.x || !props.epk.y) {
-      return Promise.reject(new Error("missing ephemeral public key"));
-    }
-    var epk = ecUtil.convertToObj(props.epk, true);
-
-    // {key} is private
-    if (!key || !key.d) {
-      return Promise.reject(new Error("missing static private key"));
-    }
-    var spk = ecUtil.convertToObj(key, false);
-
-    // derive ECDH shared
-    var promise = doEcdhesCommonDerive(spk, epk, {
-      algorithm: props.alg,
-      apu: props.apu,
-      apv: props.apv
-    });
-    promise = promise.then(function(shared) {
-      // unwrap provided key with ECDH shared
-      return unwrap(shared, cdata);
-    });
-    return promise;
-  };
-
-  return fn;
-}
-
-// ### Public API
-// * [name].derive
-[
-  "ECDH",
-  "ECDH-HKDF",
-  "ECDH-CONCAT"
-].forEach(function(name) {
-  var kdf = /^ECDH(?:-(\w+))?$/g.exec(name || "")[1];
-  var op = ecdh[name] = ecdh[name] || {};
-  switch (kdf || "") {
-    case "CONCAT":
-      op.derive = ecdhConcatDeriveFn();
-      break;
-    case "HKDF":
-      op.derive = ecdhHkdfDeriveFn();
-      break;
-    case "":
-      op.derive = ecdhDeriveFn();
-      break;
-    default:
-      op.derive = null;
-  }
-});
-
-// * [name].encrypt
-// * [name].decrypt
-[
-  "ECDH-ES",
-  "ECDH-ES+A128KW",
-  "ECDH-ES+A192KW",
-  "ECDH-ES+A256KW"
-].forEach(function(name) {
-  var kw = /^ECDH-ES(?:\+(.+))?/g.exec(name || "")[1];
-  var op = ecdh[name] = ecdh[name] || {};
-  if (!kw) {
-    op.encrypt = ecdhesDirEncryptFn();
-    op.decrypt = ecdhesDirDecryptFn();
-  } else {
-    kw = aesKw[kw];
-    if (kw) {
-      op.encrypt = ecdhesKwEncryptFn(kw.encrypt);
-      op.decrypt = ecdhesKwDecryptFn(kw.decrypt);
-    } else {
-      op.ecrypt = op.decrypt = null;
-    }
-  }
-});
-//*/
-
-}).call(this,require("buffer").Buffer)
-},{"../util":128,"../util/merge":129,"./aes-kw.js":79,"./concat.js":80,"./constants.js":81,"./ec-util.js":83,"./helpers.js":86,"./hkdf.js":87,"buffer":140,"lodash.clone":27,"lodash.omit":38,"lodash.pick":41}],85:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/ecdsa.js - Elliptic Curve Digitial Signature Algorithms
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var ecUtil = require("./ec-util.js"),
-    helpers = require("./helpers.js"),
-    sha = require("./sha.js");
-
-function idealCurve(hash) {
-  switch (hash) {
-    case "SHA-256":
-      return "P-256";
-    case "SHA-384":
-      return "P-384";
-    case "SHA-512":
-      return "P-521";
-    default:
-      throw new Error("unsupported hash: " + hash);
-  }
-}
-
-function ecdsaSignFN(hash) {
-  var curve = idealCurve(hash);
-
-  // ### Fallback implementation -- uses forge
-  var fallback = function(key, pdata /*, props */) {
-    if (curve !== key.crv) {
-      return Promise.reject(new Error("invalid curve"));
-    }
-    var pk = ecUtil.convertToForge(key, false);
-
-    var promise;
-    // generate hash
-    promise = sha[hash].digest(pdata);
-    // sign hash
-    promise = promise.then(function(result) {
-      result = pk.sign(result);
-      result = Buffer.concat([result.r, result.s]);
-      return {
-        data: pdata,
-        mac: result
-      };
-    });
-    return promise;
-  };
-
-  // ### WebCrypto API implementation
-  var webcrypto = function(key, pdata /*, props */) {
-    if (curve !== key.crv) {
-      return Promise.reject(new Error("invalid curve"));
-    }
-    var pk = ecUtil.convertToJWK(key, false);
-
-    var promise;
-    var alg = {
-      name: "ECDSA",
-      namedCurve: pk.crv,
-      hash: {
-        name: hash
-      }
-    };
-    promise = helpers.subtleCrypto.importKey("jwk",
-                                             pk,
-                                             alg,
-                                             true,
-                                             [ "sign" ]);
-    promise = promise.then(function(key) {
-      return helpers.subtleCrypto.sign(alg, key, pdata);
-    });
-    promise = promise.then(function(result) {
-      result = new Uint8Array(result);
-      result = Buffer._augment(result);
-      return {
-        data: pdata,
-        mac: result
-      };
-    });
-    return promise;
-  };
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-
-function ecdsaVerifyFN(hash) {
-  var curve = idealCurve(hash);
-
-  // ### Fallback implementation -- uses forge
-  var fallback = function(key, pdata, mac /*, props */) {
-    if (curve !== key.crv) {
-      return Promise.reject(new Error("invalid curve"));
-    }
-    var pk = ecUtil.convertToForge(key, true);
-
-    var promise;
-    // generate hash
-    promise = sha[hash].digest(pdata);
-    // verify hash
-    promise = promise.then(function(result) {
-      var len = mac.length / 2;
-      var rs = {
-        r: mac.slice(0, len),
-        s: mac.slice(len)
-      };
-      if (!pk.verify(result, rs)) {
-        return Promise.reject(new Error("verification failed"));
-      }
-      return {
-        data: pdata,
-        mac: mac,
-        valid: true
-      };
-    });
-    return promise;
-  };
-
-  // ### WebCrypto API implementation
-  var webcrypto = function(key, pdata, mac /* , props */) {
-    if (curve !== key.crv) {
-      return Promise.reject(new Error("invalid curve"));
-    }
-    var pk = ecUtil.convertToJWK(key, true);
-
-    var promise;
-    var alg = {
-      name: "ECDSA",
-      namedCurve: pk.crv,
-      hash: {
-        name: hash
-      }
-    };
-    promise = helpers.subtleCrypto.importKey("jwk",
-                                             pk,
-                                             alg,
-                                             true,
-                                             ["verify"]);
-    promise = promise.then(function(key) {
-      return helpers.subtleCrypto.verify(alg, key, mac, pdata);
-    });
-    promise = promise.then(function(result) {
-      if (!result) {
-        return Promise.reject(new Error("verification failed"));
-      }
-      return {
-        data: pdata,
-        mac: mac,
-        valid: true
-      };
-    });
-    return promise;
-  };
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-
-// ### Public API
-var ecdsa = {};
-
-// * [name].sign
-// * [name].verify
-[
-  "ES256",
-  "ES384",
-  "ES512"
-].forEach(function(name) {
-  var hash = name.replace(/ES(\d+)/g, function(m, size) {
-    return "SHA-" + size;
-  });
-  ecdsa[name] = {
-    sign: ecdsaSignFN(hash),
-    verify: ecdsaVerifyFN(hash)
-  };
-});
-
-module.exports = ecdsa;
-
-}).call(this,require("buffer").Buffer)
-},{"./ec-util.js":83,"./helpers.js":86,"./sha.js":94,"buffer":140}],86:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/helpers.js - Internal functions and fields used in Cryptographic
- * Algorithms
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-if (typeof Promise === "undefined") {
-  require("es6-promise").polyfill();
-}
-
-// ###
-exports.int32ToBuffer = function(v, b) {
-  b = b || new Buffer(4);
-  b[0] = (v >>> 24) & 0xff;
-  b[1] = (v >>> 16) & 0xff;
-  b[2] = (v >>> 8) & 0xff;
-  b[3] = v & 0xff;
-  return b;
-};
-
-var MAX_INT32 = Math.pow(2, 32);
-exports.int64ToBuffer = function(v, b) {
-  b = b || new Buffer(8);
-  var hi = Math.floor(v / MAX_INT32),
-      lo = v % MAX_INT32;
-  hi = exports.int32ToBuffer(hi);
-  lo = exports.int32ToBuffer(lo);
-  b = Buffer.concat([hi, lo]);
-  return b;
-};
-
-// ### crypto and DOMException in browsers ###
-/* global crypto:false, DOMException:false */
-
-function getCryptoSubtle() {
-  if ("undefined" !== typeof crypto) {
-    if ("undefined" !== typeof crypto.subtle) {
-      return crypto.subtle;
-    }
-    if ("undefined" !== typeof crypto.webkitSubtle) {
-      return crypto.webkitSubtle;
-    }
-  }
-
-  return undefined;
-}
-function getCryptoNodeJS() {
-  var crypto;
-  try {
-    var pkgname = "crypto";
-    crypto = require(pkgname);
-  } catch (err) {
-    return undefined;
-  }
-
-  return crypto;
-}
-
-var supported = {};
-Object.defineProperty(exports, "subtleCrypto", {
-  get: function() {
-    var result;
-
-    if ("subtleCrypto" in supported) {
-      result = supported.subtleCrypto;
-    } else {
-      result = supported.subtleCrypto = getCryptoSubtle();
-    }
-
-    return result;
-  },
-  enumerable: true
-});
-Object.defineProperty(exports, "nodeCrypto", {
-  get: function() {
-    var result;
-
-    if ("nodeCrypto" in supported) {
-      result = supported.nodeCrypto;
-    } else {
-      result = supported.nodeCrypto = getCryptoNodeJS();
-    }
-
-    return result;
-  },
-  enumerable: true
-});
-
-exports.setupFallback = function(nodejs, webcrypto, fallback) {
-  var impl;
-
-  if (nodejs && exports.nodeCrypto) {
-    impl = function main() {
-      var args = arguments,
-          promise;
-
-      function check(err) {
-        if (0 === err.message.indexOf("unsupported algorithm:")) {
-          impl = fallback;
-          return impl.apply(null, args);
-        }
-
-        return Promise.reject(err);
-      }
-
-      try {
-        promise = Promise.resolve(nodejs.apply(null, args));
-      } catch(err) {
-        promise = check(err);
-      }
-
-      return promise;
-    };
-  } else if (webcrypto && exports.subtleCrypto) {
-    impl = function main() {
-      var args = arguments,
-         promise;
-
-      function check(err) {
-        if (err.code === DOMException.NOT_SUPPORTED_ERR ||
-            // Firefox rejects some operations erroneously complaining about inputs
-            err.message === "Only ArrayBuffer and ArrayBufferView objects can be passed as CryptoOperationData" ||
-            // MS Edge rejects with not an Error
-            !(err instanceof Error)) {
-          // not actually supported -- always use fallback
-          impl = fallback;
-          return impl.apply(null, args);
-        }
-
-       return Promise.reject(err);
-      }
-
-      try {
-        promise = webcrypto.apply(null, args);
-        promise = promise.catch(check);
-      } catch(err) {
-        promise = check(err);
-      }
-
-      return promise;
-    };
-  } else {
-    impl = fallback;
-  }
-
-  return impl;
-};
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":140,"es6-promise":1}],87:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/hkdf.js - HMAC-based Extract-and-Expand Key Derivation
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var CONSTANTS = require("./constants.js"),
-    hmac = require("./hmac.js");
-
-function hkdfDeriveFn(name) {
-  var hash = name.replace("HKDF-", ""),
-      op = name.replace("HKDF-SHA-", "HS");
-
-  // NOTE: no nodejs/webcrypto/fallback model, since this HKDF is
-  //       implemented using the HMAC algorithms
-
-  var fn = function(key, props) {
-    var hashLen = CONSTANTS.HASHLENGTH[hash] / 8;
-
-    if ("string" === typeof op) {
-      op = hmac[op].sign;
-    }
-
-    // prepare options
-    props = props || {};
-    var salt = props.salt;
-    if (!salt || 0 === salt.length) {
-      salt = new Buffer(hashLen);
-      salt.fill(0);
-    }
-    var info = props.info || new Buffer(0);
-    var keyLen = props.length || hashLen;
-
-    var promise;
-
-    // Setup Expansion
-    var N = Math.ceil(keyLen / hashLen),
-        okm = [],
-        idx = 0;
-    function expand(key, T) {
-      if (N === idx++) {
-        return Buffer.concat(okm).slice(0, keyLen);
-      }
-
-      if (!T) {
-        T = new Buffer(0);
-      }
-      T = Buffer.concat([T, info, new Buffer([idx])]);
-      T = op(key, T, { loose: true });
-      T = T.then(function(result) {
-        T = result.mac;
-        okm.push(T);
-
-        return expand(key, T);
-      });
-      return T;
-    }
-
-    // Step 1: Extract
-    promise = op(salt, key, { loose: true });
-    promise = promise.then(function(result) {
-      // Step 2: Expand
-      return expand(result.mac);
-    });
-
-    return promise;
-  };
-
-  return fn;
-}
-
-// Public API
-// * [name].derive
-var hkdf = {};
-[
-  "HKDF-SHA-1",
-  "HKDF-SHA-256",
-  "HKDF-SHA-384",
-  "HKDF-SHA-512"
-].forEach(function(name) {
-  hkdf[name] = {
-    derive: hkdfDeriveFn(name)
-  };
-});
-
-module.exports = hkdf;
-
-}).call(this,require("buffer").Buffer)
-},{"./constants.js":81,"./hmac.js":88,"buffer":140}],88:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/hmac.js - HMAC-based "signatures"
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var CONSTANTS = require("./constants"),
-    forge = require("../deps/forge.js"),
-    DataBuffer = require("../util/databuffer.js"),
-    helpers = require("./helpers.js");
-
-function hmacSignFN(name) {
-  var md = name.replace("HS", "SHA").toLowerCase(),
-      hash = name.replace("HS", "SHA-");
-
-  // ### Fallback Implementation -- uses forge
-  var fallback = function(key, pdata, props) {
-    props = props || {};
-    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
-      return Promise.reject(new Error("invalid key length"));
-    }
-
-    var sig = forge.hmac.create();
-    sig.start(md, key.toString("binary"));
-    sig.update(pdata);
-    sig = sig.digest().native();
-
-    return Promise.resolve({
-      data: pdata,
-      mac: sig
-    });
-  };
-
-  // ### WebCryptoAPI Implementation
-  var webcrypto = function(key, pdata, props) {
-    props = props || {};
-    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
-      return Promise.reject(new Error("invalid key length"));
-    }
-
-    var alg = {
-      name: "HMAC",
-      hash: {
-        name: hash
-      }
-    };
-    var promise;
-    promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["sign"]);
-    promise = promise.then(function(key) {
-      return helpers.subtleCrypto.sign(alg, key, pdata);
-    });
-    promise = promise.then(function(result) {
-      // wrap in *augmented* Uint8Array - Buffer without copies
-      var sig = new Uint8Array(result);
-      sig = Buffer._augment(sig);
-      return {
-        data: pdata,
-        mac: sig
-      };
-    });
-
-    return promise;
-  };
-
-  // ### NodeJS implementation
-  var nodejs = function(key, pdata, props) {
-    props = props || {};
-    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
-      return Promise.reject(new Error("invalid key length"));
-    }
-
-    var hmac = helpers.nodeCrypto.createHmac(md, key);
-    hmac.update(pdata);
-
-    var sig = hmac.digest();
-    return {
-      data: pdata,
-      mac: sig
-    };
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-function hmacVerifyFN(name) {
-  var md = name.replace("HS", "SHA").toLowerCase(),
-      hash = name.replace("HS", "SHA-");
-
-  function compare(loose, expected, actual) {
-    var len = loose ? expected.length : CONSTANTS.HASHLENGTH[hash] / 8,
-        valid = true;
-    for (var idx = 0; len > idx; idx++) {
-      valid = valid && (expected[idx] === actual[idx]);
-    }
-    return valid;
-  }
-
-  // ### Fallback Implementation -- uses forge
-  var fallback = function(key, pdata, mac, props) {
-    props = props || {};
-    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
-      return Promise.reject(new Error("invalid key length"));
-    }
-
-    var vrfy = forge.hmac.create();
-    vrfy.start(md, new DataBuffer(key));
-    vrfy.update(pdata);
-    vrfy = vrfy.digest().native();
-
-    if (compare(props.loose, mac, vrfy)) {
-      return Promise.resolve({
-        data: pdata,
-        mac: mac,
-        valid: true
-      });
-    } else {
-      return Promise.reject(new Error("verification failed"));
-    }
-  };
-
-  var webcrypto = function(key, pdata, mac, props) {
-    props = props || {};
-    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
-      return Promise.reject(new Error("invalid key length"));
-    }
-
-    var alg = {
-      name: "HMAC",
-      hash: {
-        name: hash
-      }
-    };
-    var promise;
-    if (props.loose) {
-      promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["sign"]);
-      promise = promise.then(function(key) {
-        return helpers.subtleCrypto.sign(alg, key, pdata);
-      });
-      promise = promise.then(function(result) {
-        // wrap in *augmented* Uint8Array - Buffer without copies
-        var sig = new Uint8Array(result);
-        sig = Buffer._augment(sig);
-        return compare(true, mac, sig);
-      });
-    } else {
-      promise = helpers.subtleCrypto.importKey("raw", key, alg, true, ["verify"]);
-      promise = promise.then(function(key) {
-        return helpers.subtleCrypto.verify(alg, key, mac, pdata);
-      });
-    }
-    promise = promise.then(function(result) {
-      if (!result) {
-        return Promise.reject("verifaction failed");
-      }
-
-      return {
-        data: pdata,
-        mac: mac,
-        valid: true
-      };
-    });
-
-    return promise;
-  };
-
-  var nodejs = function(key, pdata, mac, props) {
-    props = props || {};
-    if (!props.loose && CONSTANTS.HASHLENGTH[hash] > (key.length << 3)) {
-      return Promise.reject(new Error("invalid key length"));
-    }
-
-    var hmac = helpers.nodeCrypto.createHmac(md, key);
-    hmac.update(pdata);
-
-    var sig = hmac.digest();
-    if (!compare(props.loose, mac, sig)) {
-      throw new Error("verification failed");
-    }
-    return {
-      data: pdata,
-      mac: sig,
-      valid: true
-    };
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-// ### Public API
-// * [name].sign
-// * [name].verify
-var hmac = {};
-[
-  "HS1",
-  "HS256",
-  "HS384",
-  "HS512"
-].forEach(function(alg) {
-  hmac[alg] = {
-    sign: hmacSignFN(alg),
-    verify: hmacVerifyFN(alg)
-  };
-});
-
-module.exports = hmac;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"../util/databuffer.js":127,"./constants":81,"./helpers.js":86,"buffer":140}],89:[function(require,module,exports){
-/*!
- * algorithms/index.js - Cryptographic Algorithms Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-// setup implementations
-var implementations = [
-  require("./aes-cbc-hmac-sha2.js"),
-  require("./aes-gcm.js"),
-  require("./aes-kw.js"),
-  require("./concat.js"),
-  require("./dir.js"),
-  require("./ecdh.js"),
-  require("./ecdsa.js"),
-  require("./hkdf.js"),
-  require("./hmac.js"),
-  require("./pbes2.js"),
-  require("./rsaes.js"),
-  require("./rsassa.js"),
-  require("./sha.js")
-];
-
-var ALGS_DIGEST = {};
-var ALGS_DERIVE = {};
-var ALGS_SIGN = {},
-    ALGS_VRFY = {};
-var ALGS_ENC = {},
-    ALGS_DEC = {};
-
-implementations.forEach(function(mod) {
-  Object.keys(mod).forEach(function(alg) {
-    var op = mod[alg];
-
-    if ("function" === typeof op.encrypt) {
-      ALGS_ENC[alg] = op.encrypt;
-    }
-    if ("function" === typeof op.decrypt) {
-      ALGS_DEC[alg] = op.decrypt;
-    }
-    if ("function" === typeof op.sign) {
-      ALGS_SIGN[alg] = op.sign;
-    }
-    if ("function" === typeof op.verify) {
-      ALGS_VRFY[alg] = op.verify;
-    }
-    if ("function" === typeof op.digest) {
-      ALGS_DIGEST[alg] = op.digest;
-    }
-    if ("function" === typeof op.derive) {
-      ALGS_DERIVE[alg] = op.derive;
-    }
-  });
-});
-
-// public API
-exports.digest = function(alg, data, props) {
-  var op = ALGS_DIGEST[alg];
-  if (!op) {
-    return Promise.reject(new Error("unsupported algorithm: " + alg));
-  }
-
-  return op(data, props);
-};
-
-exports.derive = function(alg, key, props) {
-  var op = ALGS_DERIVE[alg];
-  if (!op) {
-    return Promise.reject(new Error("unsupported algorithm: " + alg));
-  }
-
-  return op(key, props);
-};
-
-exports.sign = function(alg, key, pdata, props) {
-  var op = ALGS_SIGN[alg];
-  if (!op) {
-    return Promise.reject(new Error("unsupported algorithm: " + alg));
-  }
-
-  return op(key, pdata, props || {});
-};
-
-exports.verify = function(alg, key, pdata, mac, props) {
-  var op = ALGS_VRFY[alg];
-  if (!op) {
-    return Promise.reject(new Error("unsupported algorithm: " + alg));
-  }
-
-  return op(key, pdata, mac, props || {});
-};
-
-exports.encrypt = function(alg, key, pdata, props) {
-  var op = ALGS_ENC[alg];
-  if (!op) {
-    return Promise.reject(new Error("unsupported algorithm: " + alg));
-  }
-
-  return op(key, pdata, props || {});
-};
-
-exports.decrypt = function(alg, key, cdata, props) {
-  var op = ALGS_DEC[alg];
-  if (!op) {
-    return Promise.reject(new Error("unsupported algorithm: " + alg));
-  }
-
-  return op(key, cdata, props || {});
-};
-
-},{"./aes-cbc-hmac-sha2.js":77,"./aes-gcm.js":78,"./aes-kw.js":79,"./concat.js":80,"./dir.js":82,"./ecdh.js":84,"./ecdsa.js":85,"./hkdf.js":87,"./hmac.js":88,"./pbes2.js":90,"./rsaes.js":92,"./rsassa.js":93,"./sha.js":94}],90:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/pbes2.js - Password-Based Encryption (v2) Algorithms
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var forge = require("../deps/forge.js"),
-    util = require("../util"),
-    helpers = require("./helpers.js"),
-    CONSTANTS = require("./constants.js"),
-    KW = require("./aes-kw.js");
-
-var NULL_BUFFER = new Buffer([0]);
-
-function fixSalt(hmac, kw, salt) {
-  var alg = "PBES2-" + hmac + "+" + kw;
-  var output = [
-    new Buffer(alg, "utf8"),
-    NULL_BUFFER,
-    salt
-  ];
-  return Buffer.concat(output);
-}
-
-function pbes2EncryptFN(hmac, kw) {
-  var keyLen = CONSTANTS.KEYLENGTH[kw] / 8;
-
-  var fallback = function(key, pdata, props) {
-    props = props || {};
-
-    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
-        itrs = props.p2c || 0;
-
-    if (0 >= itrs) {
-      return Promise.reject(new Error("invalid iteration count"));
-    }
-
-    if (8 > salt.length) {
-      return Promise.reject(new Error("salt too small"));
-    }
-    salt = fixSalt(hmac, kw, salt);
-
-    var promise;
-
-    // STEP 1: derive shared key
-    promise = new Promise(function(resolve, reject) {
-      var md = forge.md[hmac.replace("HS", "SHA").toLowerCase()].create();
-      var cb = function(err, dk) {
-        if (err) {
-          reject(err);
-        } else {
-          dk = new Buffer(dk, "binary");
-          resolve(dk);
-        }
-      };
-
-      forge.pkcs5.pbkdf2(key.toString("binary"),
-                         salt.toString("binary"),
-                         itrs,
-                         keyLen,
-                         md,
-                         cb);
-    });
-
-    // STEP 2: encrypt cek
-    promise = promise.then(function(dk) {
-      return KW[kw].encrypt(dk, pdata);
-    });
-    return promise;
-  };
-
-  // NOTE: WebCrypto API missing until there's better support
-  var webcrypto = null;
-
-  var nodejs = function(key, pdata, props) {
-    if (6 > helpers.nodeCrypto.pbkdf2.length) {
-      throw new Error("unsupported algorithm: PBES2-" + hmac + "+" + kw);
-    }
-
-    props = props || {};
-
-    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
-        itrs = props.p2c || 0;
-
-    if (0 >= itrs) {
-      return Promise.reject(new Error("invalid iteration count"));
-    }
-
-    if (8 > salt.length) {
-      return Promise.reject(new Error("salt too small"));
-    }
-    salt = fixSalt(hmac, kw, salt);
-
-    var promise;
-
-    // STEP 1: derive shared key
-    var hash = hmac.replace("HS", "SHA");
-    promise = new Promise(function(resolve, reject) {
-      function cb(err, dk) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(dk);
-        }
-      }
-      helpers.nodeCrypto.pbkdf2(key, salt, itrs, keyLen, hash, cb);
-    });
-
-    // STEP 2: encrypt cek
-    promise = promise.then(function(dk) {
-      return KW[kw].encrypt(dk, pdata);
-    });
-
-    return promise;
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-function pbes2DecryptFN(hmac, kw) {
-  var keyLen = CONSTANTS.KEYLENGTH[kw] / 8;
-
-  var fallback = function(key, cdata, props) {
-    props = props || {};
-
-    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
-        itrs = props.p2c || 0;
-
-    if (0 >= itrs) {
-      return Promise.reject(new Error("invalid iteration count"));
-    }
-
-    if (8 > salt.length) {
-      return Promise.reject(new Error("salt too small"));
-    }
-    salt = fixSalt(hmac, kw, salt);
-
-    var promise;
-
-    // STEP 1: derived shared key
-    promise = new Promise(function(resolve, reject) {
-      var md = forge.md[hmac.replace("HS", "SHA").toLowerCase()].create();
-      var cb = function(err, dk) {
-        if (err) {
-          reject(err);
-        } else {
-          dk = new Buffer(dk, "binary");
-          resolve(dk);
-        }
-      };
-
-      forge.pkcs5.pbkdf2(key.toString("binary"),
-                         salt.toString("binary"),
-                         itrs,
-                         keyLen,
-                         md,
-                         cb);
-    });
-
-    // STEP 2: decrypt cek
-    promise = promise.then(function(dk) {
-      return KW[kw].decrypt(dk, cdata);
-    });
-    return promise;
-  };
-
-  // NOTE: WebCrypto API missing until there's better support
-  var webcrypto = null;
-
-  var nodejs = function(key, cdata, props) {
-    if (6 > helpers.nodeCrypto.pbkdf2.length) {
-      throw new Error("unsupported algorithm: PBES2-" + hmac + "+" + kw);
-    }
-
-    props = props || {};
-
-    var salt = util.asBuffer(props.p2s || new Buffer(0), "base64url"),
-        itrs = props.p2c || 0;
-
-    if (0 >= itrs) {
-      return Promise.reject(new Error("invalid iteration count"));
-    }
-
-    if (8 > salt.length) {
-      return Promise.reject(new Error("salt too small"));
-    }
-    salt = fixSalt(hmac, kw, salt);
-
-    var promise;
-
-    // STEP 1: derive shared key
-    var hash = hmac.replace("HS", "SHA");
-    promise = new Promise(function(resolve, reject) {
-      function cb(err, dk) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(dk);
-        }
-      }
-      helpers.nodeCrypto.pbkdf2(key, salt, itrs, keyLen, hash, cb);
-    });
-
-    // STEP 2: decrypt cek
-    promise = promise.then(function(dk) {
-      return KW[kw].decrypt(dk, cdata);
-    });
-
-    return promise;
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-// ### Public API
-// [name].encrypt
-// [name].decrypt
-var pbes2 = {};
-[
-  "PBES2-HS256+A128KW",
-  "PBES2-HS384+A192KW",
-  "PBES2-HS512+A256KW"
-].forEach(function(alg) {
-  var parts = /PBES2-(HS\d+)\+(A\d+KW)/g.exec(alg);
-  var hmac = parts[1],
-      kw = parts[2];
-  pbes2[alg] = {
-    encrypt: pbes2EncryptFN(hmac, kw),
-    decrypt: pbes2DecryptFN(hmac, kw)
-  };
-});
-
-module.exports = pbes2;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"../util":128,"./aes-kw.js":79,"./constants.js":81,"./helpers.js":86,"buffer":140}],91:[function(require,module,exports){
-/*!
- * algorithms/rsa-util.js - RSA Utility Functions
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var clone = require("lodash.clone"),
-    forge = require("../deps/forge.js"),
-    util = require("../util");
-
-// ### RSA-specific Helpers
-function convertToForge(key, isPublic) {
-  var parts = isPublic ?
-              ["n", "e"] :
-              ["n", "e", "d", "p", "q", "dp", "dq", "qi"];
-  parts = parts.map(function(f) {
-    return new forge.jsbn.BigInteger(key[f].toString("hex"), 16);
-  });
-
-  var fn = isPublic ?
-           forge.pki.rsa.setPublicKey :
-           forge.pki.rsa.setPrivateKey;
-  return fn.apply(forge.pki.rsa, parts);
-}
-function convertToJWK(key, isPublic) {
-  var result = clone(key);
-  var parts = isPublic ?
-              ["n", "e"] :
-              ["n", "e", "d", "p", "q", "dp", "dq", "qi"];
-  parts.forEach(function(f) {
-    result[f] = util.base64url.encode(result[f]);
-  });
-
-  // remove potentially troublesome properties
-  delete result.key_ops;
-  delete result.use;
-  delete result.alg;
-
-  if (isPublic) {
-    delete result.d;
-    delete result.p;
-    delete result.q;
-    delete result.dp;
-    delete result.dq;
-    delete result.qi;
-  }
-
-  return result;
-}
-
-module.exports = {
-  convertToForge: convertToForge,
-  convertToJWK: convertToJWK
-};
-
-},{"../deps/forge.js":103,"../util":128,"lodash.clone":27}],92:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/rsassa.js - RSA Signatures
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var forge = require("../deps/forge.js"),
-    helpers = require("./helpers.js"),
-    DataBuffer = require("../util/databuffer.js"),
-    rsaUtil = require("./rsa-util.js");
-
-// ### RSAES-PKCS1-v1_5
-
-// ### RSAES-OAEP
-function rsaesEncryptFn(name) {
-  var alg = {
-    name: name
-  };
-
-  if ("RSA-OAEP-256" === name) {
-    alg.name = "RSA-OAEP";
-    alg.hash = {
-      name: "SHA-256"
-    };
-  } else if ("RSA-OAEP" === name) {
-    alg.hash = {
-      name: "SHA-1"
-    };
-  } else {
-    alg.name = "RSAES-PKCS1-v1_5";
-  }
-
-  // ### Fallback Implementation -- uses forge
-  var fallback = function(key, pdata) {
-    // convert pdata to byte string
-    pdata = new DataBuffer(pdata).bytes();
-
-    // encrypt it
-    var pki = rsaUtil.convertToForge(key, true),
-        params = {};
-    if ("RSA-OAEP" === alg.name) {
-      params.md = alg.hash.name.toLowerCase().replace(/\-/g, "");
-      params.md = forge.md[params.md].create();
-    }
-    var cdata = pki.encrypt(pdata, alg.name.toUpperCase(), params);
-
-    // convert cdata to Buffer
-    cdata = new DataBuffer(cdata).native();
-
-    return Promise.resolve({
-      data: cdata
-    });
-  };
-
-  // ### WebCryptoAPI Implementation
-  var webcrypto;
-  if ("RSAES-PKCS1-v1_5" !== alg.name) {
-    webcrypto = function(key, pdata) {
-      key = rsaUtil.convertToJWK(key, true);
-      var promise;
-      promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["encrypt"]);
-      promise = promise.then(function(key) {
-        return helpers.subtleCrypto.encrypt(alg, key, pdata);
-      });
-      promise = promise.then(function(result) {
-        // wrap in *augmented* Uint8Array - Buffer without copies
-        var cdata = new Uint8Array(result);
-        cdata = Buffer._augment(cdata);
-        return {
-          data: cdata
-        };
-      });
-
-      return promise;
-    };
-  } else {
-    webcrypto = null;
-  }
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-
-function rsaesDecryptFn(name) {
-  var alg = {
-    name: name
-  };
-
-  if ("RSA-OAEP-256" === name) {
-    alg.name = "RSA-OAEP";
-    alg.hash = {
-      name: "SHA-256"
-    };
-  } else if ("RSA-OAEP" === name) {
-    alg.hash = {
-      name: "SHA-1"
-    };
-  } else {
-    alg.name = "RSAES-PKCS1-v1_5";
-  }
-
-  // ### Fallback Implementation -- uses forge
-  var fallback = function(key, cdata) {
-    // convert cdata to byte string
-    cdata = new DataBuffer(cdata).bytes();
-
-    // decrypt it
-    var pki = rsaUtil.convertToForge(key, false),
-        params = {};
-    if ("RSA-OAEP" === alg.name) {
-      params.md = alg.hash.name.toLowerCase().replace(/\-/g, "");
-      params.md = forge.md[params.md].create();
-    }
-    var pdata = pki.decrypt(cdata, alg.name.toUpperCase(), params);
-
-    // convert pdata to Buffer
-    pdata = new DataBuffer(pdata).native();
-
-    return Promise.resolve(pdata);
-  };
-
-  // ### WebCryptoAPI Implementation
-  var webcrypto;
-  if ("RSAES-PKCS1-v1_5" !== alg.name) {
-    webcrypto = function(key, pdata) {
-      key = rsaUtil.convertToJWK(key, false);
-      var promise;
-      promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["decrypt"]);
-      promise = promise.then(function(key) {
-        return helpers.subtleCrypto.decrypt(alg, key, pdata);
-      });
-      promise = promise.then(function(result) {
-        // wrap in *augmented* Uint8Array - Buffer without copies
-        var pdata = new Uint8Array(result);
-        pdata = Buffer._augment(pdata);
-        return pdata;
-      });
-
-      return promise;
-    };
-  } else {
-    webcrypto = null;
-  }
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-
-// ### Public API
-// * [name].encrypt
-// * [name].decrypt
-var rsaes = {};
-[
-  "RSA-OAEP",
-  "RSA-OAEP-256",
-  "RSA1_5"
-].forEach(function(name) {
-  rsaes[name] = {
-    encrypt: rsaesEncryptFn(name),
-    decrypt: rsaesDecryptFn(name)
-  };
-});
-
-module.exports = rsaes;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"../util/databuffer.js":127,"./helpers.js":86,"./rsa-util.js":91,"buffer":140}],93:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/rsassa.js - RSA Signatures
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var forge = require("../deps/forge.js"),
-    CONSTANTS = require("./constants"),
-    helpers = require("./helpers.js"),
-    rsaUtil = require("./rsa-util.js");
-
-// ### RSASSA-PKCS1-v1_5
-
-function rsassaV15SignFn(name) {
-  var md = name.replace("RS", "SHA").toLowerCase(),
-      hash = name.replace("RS", "SHA-");
-
-  var alg = {
-    name: "RSASSA-PKCS1-V1_5",
-    hash: {
-      name: hash
-    }
-  };
-
-  // ### Fallback Implementation -- uses forge
-  var fallback = function(key, pdata) {
-    // create the digest
-    var digest = forge.md[md].create();
-    digest.start();
-    digest.update(pdata);
-
-    // sign it
-    var pki = rsaUtil.convertToForge(key, false);
-    var sig = pki.sign(digest, "RSASSA-PKCS1-V1_5");
-    sig = new Buffer(sig, "binary");
-
-    return Promise.resolve({
-      data: pdata,
-      mac: sig
-    });
-  };
-
-  // ### WebCryptoAPI Implementation
-  var webcrypto = function(key, pdata) {
-    key = rsaUtil.convertToJWK(key, false);
-    var promise;
-    promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["sign"]);
-    promise = promise.then(function(key) {
-      return helpers.subtleCrypto.sign(alg, key, pdata);
-    });
-    promise = promise.then(function(result) {
-      // wrap in *augmented* Uint8Array - Buffer without copies
-      var sig = new Uint8Array(result);
-      sig = Buffer._augment(sig);
-      return {
-        data: pdata,
-        mac: sig
-      };
-    });
-
-    return promise;
-  };
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-
-function rsassaV15VerifyFn(name) {
-  var md = name.replace("RS", "SHA").toLowerCase(),
-      hash = name.replace("RS", "SHA-");
-  var alg = {
-    name: "RSASSA-PKCS1-V1_5",
-    hash: {
-      name: hash
-    }
-  };
-
-  // ### Fallback implementation -- uses forge
-  var fallback = function(key, pdata, mac) {
-    // create the digest
-    var digest = forge.md[md].create();
-    digest.start();
-    digest.update(pdata);
-    digest = digest.digest().bytes();
-
-    // verify it
-    var pki = rsaUtil.convertToForge(key, true);
-    var sig = mac.toString("binary");
-    var result = pki.verify(digest, sig, "RSASSA-PKCS1-V1_5");
-    if (!result) {
-      return Promise.reject(new Error("verification failed"));
-    }
-    return Promise.resolve({
-      data: pdata,
-      mac: mac,
-      valid: true
-    });
-  };
-
-  // ### WebCryptoAPI Implementation
-  var webcrypto = function(key, pdata, mac) {
-    key = rsaUtil.convertToJWK(key, true);
-    var promise;
-    promise = helpers.subtleCrypto.importKey("jwk", key, alg, true, ["verify"]);
-    promise = promise.then(function(key) {
-      return helpers.subtleCrypto.verify(alg, key, mac, pdata);
-    });
-    promise = promise.then(function(result) {
-      if (!result) {
-        return Promise.reject(new Error("verification failed"));
-      }
-
-      return {
-        data: pdata,
-        mac: mac,
-        valid: true
-      };
-    });
-
-    return promise;
-  };
-
-  return helpers.setupFallback(null, webcrypto, fallback);
-}
-
-// ### RSA-PSS
-// NOTE: no WebCryptoAPI variant -- too many browsers don't
-// implement it yet (e.g., Firefox, Safari)
-
-function rsassaPssSignFn(name) {
-  var md = name.replace("PS", "SHA").toLowerCase(),
-      hash = name.replace("PS", "SHA-");
-
-  return function(key, pdata) {
-    // create the digest
-    var digest = forge.md[md].create();
-    digest.start();
-    digest.update(pdata);
-
-    // setup padding
-    var pss = forge.pss.create({
-      md: forge.md[md].create(),
-      mgf: forge.mgf.mgf1.create(forge.md[md].create()),
-      saltLength: CONSTANTS.HASHLENGTH[hash] / 8
-    });
-
-    // sign it
-    var pki = rsaUtil.convertToForge(key, false);
-    var sig = pki.sign(digest, pss);
-    sig = new Buffer(sig, "binary");
-
-    return Promise.resolve({
-      data: pdata,
-      mac: sig
-    });
-  };
-}
-
-function rsassaPssVerifyFn(name) {
-  var md = name.replace("PS", "SHA").toLowerCase(),
-      hash = name.replace("PS", "SHA-");
-
-  // ### Fallback implementation -- uses forge
-  return function(key, pdata, mac) {
-    // create the digest
-    var digest = forge.md[md].create();
-    digest.start();
-    digest.update(pdata);
-    digest = digest.digest().bytes();
-
-    // setup padding
-    var pss = forge.pss.create({
-      md: forge.md[md].create(),
-      mgf: forge.mgf.mgf1.create(forge.md[md].create()),
-      saltLength: CONSTANTS.HASHLENGTH[hash] / 8
-    });
-
-    // verify it
-    var pki = rsaUtil.convertToForge(key, true);
-    var sig = mac.toString("binary");
-    var result = pki.verify(digest, sig, pss);
-    if (!result) {
-      return Promise.reject(new Error("verification failed"));
-    }
-    return Promise.resolve({
-      data: pdata,
-      mac: mac,
-      valid: true
-    });
-  };
-}
-
-// ### Public API
-// * [name].sign
-// * [name].verify
-var rsassa = {};
-[
-  "PS256",
-  "PS384",
-  "PS512"
-].forEach(function(name) {
-  rsassa[name] = {
-    sign: rsassaPssSignFn(name),
-    verify: rsassaPssVerifyFn(name)
-  };
-});
-
-[
-  "RS256",
-  "RS384",
-  "RS512"
-].forEach(function(name) {
-  rsassa[name] = {
-    sign: rsassaV15SignFn(name),
-    verify: rsassaV15VerifyFn(name)
-  };
-});
-
-module.exports = rsassa;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"./constants":81,"./helpers.js":86,"./rsa-util.js":91,"buffer":140}],94:[function(require,module,exports){
-(function (Buffer){
-/*!
- * algorithms/sha.js - Cryptographic Secure Hash Algorithms, versions 1 and 2
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var forge = require("../deps/forge.js"),
-    helpers = require("./helpers.js");
-
-function hashDigestFN(hash) {
-  var md = hash.replace("SHA-", "SHA").toLowerCase();
-
-  var alg = {
-    name: hash
-  };
-
-  // ### Fallback Implementation -- uses forge
-  var fallback = function(pdata /* props */) {
-    var digest = forge.md[md].create();
-    digest.update(pdata);
-    digest = digest.digest().native();
-
-    return Promise.resolve(digest);
-  };
-
-  // ### WebCryptoAPI Implementation
-  var webcrypto = function(pdata /* props */) {
-    var promise;
-    promise = helpers.subtleCrypto.digest(alg, pdata);
-    promise = promise.then(function(result) {
-      // wrap in *augmented* Uint8Array -- Buffer without copies
-      result = new Uint8Array(result);
-      result = Buffer._augment(result);
-      return result;
-    });
-    return promise;
-  };
-
-  // ### nodejs Implementation
-  var nodejs = function(pdata /* props */) {
-    var digest = helpers.nodeCrypto.createHash(md);
-    digest.update(pdata);
-    return digest.digest();
-  };
-
-  return helpers.setupFallback(nodejs, webcrypto, fallback);
-}
-
-// Public API
-// * [name].digest
-var sha = {};
-[
-  "SHA-1",
-  "SHA-256",
-  "SHA-384",
-  "SHA-512"
-].forEach(function(name) {
-  sha[name] = {
-    digest: hashDigestFN(name)
-  };
-});
-
-module.exports = sha;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"./helpers.js":86,"buffer":140}],95:[function(require,module,exports){
-(function (Buffer){
-/*!
- * deps/ciphermodes/gcm/helpers.js - AES-GCM Helper Functions
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var Long = require("long"),
-    fill = require("lodash.fill"),
-    pack = require("../pack.js");
-
-var E1 = 0xe1000000,
-    E1B = 0xe1,
-    E1L = new Long(E1 >> 8);
-
-function generateLookup() {
-  var lookup = [];
-
-  for (var c = 0; c < 256; ++c) {
-    var v = 0;
-    for (var i = 7; i >= 0; --i) {
-      if ((c & (1 << i)) !== 0) {
-        v ^= (E1 >>> (7 - i));
-      }
-    }
-    lookup.push(v);
-  }
-
-  return lookup;
-}
-
-var helpers = module.exports = {
-  // ### Constants
-  E1: E1,
-  E1B: E1B,
-  E1L: E1L,
-  LOOKUP: generateLookup(),
-
-  // ### Array Helpers
-  arrayCopy: function(src, srcPos, dest, destPos, length) {
-    // Start by checking for negatives since arrays in JS auto-expand
-    if (srcPos < 0 || destPos < 0 || length < 0) {
-      throw new TypeError("Invalid input.");
-    }
-
-    if (dest instanceof Uint8Array) {
-      // Check for overflow if dest is a typed-array
-      if (destPos >= dest.length || (destPos + length) > dest.length) {
-        throw new TypeError("Invalid input.");
-      }
-
-      if (srcPos !== 0 || length < src.length) {
-        if (src instanceof Uint8Array) {
-          src = src.subarray(srcPos, srcPos + length);
-        } else {
-          src = src.slice(srcPos, srcPos + length);
-        }
-      }
-
-      dest.set(src, destPos);
-    } else {
-      for (var i = 0; i < length; ++i) {
-        dest[destPos + i] = src[srcPos + i];
-      }
-    }
-  },
-  arrayEqual: function(a1, a2) {
-    a1 = a1 || [];
-    a2 = a2 || [];
-
-    var len = Math.min(a1.length, a2.length),
-        result = (a1.length === a2.length);
-
-    for (var idx = 0; idx < len; idx++) {
-      result = result &&
-               ("undefined" !== typeof a1[idx]) &&
-               ("undefined" !== typeof a2[idx]) &&
-               (a1[idx] === a2[idx]);
-    }
-
-    return result;
-  },
-
-  // ### Conversions
-  asBytes: function(x, z) {
-    switch (arguments.length) {
-      case 1:
-        z = new Buffer(16);
-        z.fill(0);
-        pack.intToBigEndian(x, z, 0);
-        return z;
-      case 2:
-        pack.intToBigEndian(x, z, 0);
-        break;
-      default:
-        throw new TypeError("Expected 1 or 2 arguments.");
-    }
-  },
-  asInts: function(x, z) {
-    switch (arguments.length) {
-      case 1:
-        z = [];
-        fill(z, 0, 0, 4);
-        pack.bigEndianToInt(x, 0, z);
-        return z;
-      case 2:
-        pack.bigEndianToInt(x, 0, z);
-        break;
-      default:
-        throw new TypeError("Expected 1 or 2 arguments.");
-    }
-  },
-  oneAsInts: function() {
-    var tmp = [];
-    for (var c = 0; c < 4; ++c) {
-        tmp.push(1 << 31);
-    }
-    return tmp;
-  },
-
-  // ## Bit-wise
-  shiftRight: function(x, z) {
-    var b, c;
-    switch (arguments.length) {
-      case 1:
-        b = x[0];
-        x[0] = b >>> 1;
-        c = b << 31;
-        b = x[1];
-        x[1] = (b >>> 1) | c;
-        c = b << 31;
-        b = x[2];
-        x[2] = (b >>> 1) | c;
-        c = b << 31;
-        b = x[3];
-        x[3] = (b >>> 1) | c;
-        return (b << 31) & 0xffffffff;
-      case 2:
-        b = x[0];
-        z[0] = b >>> 1;
-        c = b << 31;
-        b = x[1];
-        z[1] = (b >>> 1) | c;
-        c = b << 31;
-        b = x[2];
-        z[2] = (b >>> 1) | c;
-        c = b << 31;
-        b = x[3];
-        z[3] = (b >>> 1) | c;
-        return (b << 31) & 0xffffffff;
-      default:
-        throw new TypeError("Expected 1 or 2 arguments.");
-    }
-  },
-  shiftRightN: function(x, n, z) {
-    var nInv, b, c;
-    switch (arguments.length) {
-      case 2:
-        b = x[0];
-        nInv = 32 - n;
-        x[0] = b >>> n;
-        c = b << nInv;
-        b = x[1];
-        x[1] = (b >>> n) | c;
-        c = b << nInv;
-        b = x[2];
-        x[2] = (b >>> n) | c;
-        c = b << nInv;
-        b = x[3];
-        x[3] = (b >>> n) | c;
-        return b << nInv;
-      case 3:
-        b = x[0];
-        nInv = 32 - n;
-        z[0] = b >>> n;
-        c = b << nInv;
-        b = x[1];
-        z[1] = (b >>> n) | c;
-        c = b << nInv;
-        b = x[2];
-        z[2] = (b >>> n) | c;
-        c = b << nInv;
-        b = x[3];
-        z[3] = (b >>> n) | c;
-        return b << nInv;
-      default:
-        throw new TypeError("Expected 2 or 3 arguments.");
-    }
-  },
-  xor: function(x, y, z) {
-    switch (arguments.length) {
-      case 2:
-        x[0] ^= y[0];
-        x[1] ^= y[1];
-        x[2] ^= y[2];
-        x[3] ^= y[3];
-        break;
-      case 3:
-        z[0] = x[0] ^ y[0];
-        z[1] = x[1] ^ y[1];
-        z[2] = x[2] ^ y[2];
-        z[3] = x[3] ^ y[3];
-        break;
-      default:
-        throw new TypeError("Expected 2 or 3 arguments.");
-    }
-  },
-
-  multiply: function(x, y) {
-    var r0 = x.slice();
-    var r1 = [];
-
-    for (var i = 0; i < 4; ++i) {
-      var bits = y[i];
-      for (var j = 31; j >= 0; --j) {
-        if ((bits & (1 << j)) !== 0) {
-          helpers.xor(r1, r0);
-        }
-
-        if (helpers.shiftRight(r0) !== 0) {
-          r0[0] ^= helpers.E1;
-        }
-      }
-    }
-
-    helpers.arrayCopy(r1, 0, x, 0, 4);
-  },
-  multiplyP: function(x, y) {
-    switch (arguments.length) {
-      case 1:
-        if (helpers.shiftRight(x) !== 0) {
-          x[0] ^= helpers.E1;
-        }
-        break;
-      case 2:
-        if (helpers.shiftRight(x, y) !== 0) {
-          y[0] ^= helpers.E1;
-        }
-        break;
-      default:
-        throw new TypeError("Expected 1 or 2 arguments.");
-    }
-  },
-  multiplyP8: function(x, y) {
-    var c;
-    switch (arguments.length) {
-      case 1:
-        c = helpers.shiftRightN(x, 8);
-        x[0] ^= helpers.LOOKUP[c >>> 24];
-        break;
-      case 2:
-        c = helpers.shiftRightN(x, 8, y);
-        y[0] ^= helpers.LOOKUP[c >>> 24];
-        break;
-      default:
-        throw new TypeError("Expected 1 or 2 arguments.");
-    }
-  }
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../pack.js":99,"buffer":140,"lodash.fill":28,"long":45}],96:[function(require,module,exports){
-(function (Buffer){
-/*!
- * deps/ciphermodes/gcm/index.js - AES-GCM implementation Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
- "use strict";
-
-var Long = require("long"),
-    forge = require("../../../deps/forge.js"),
-    multipliers = require("./multipliers.js"),
-    helpers = require("./helpers.js"),
-    pack = require("../pack.js"),
-    DataBuffer = require("../../../util/databuffer.js"),
-    cipherHelpers = require("../helpers.js");
-
-var BLOCK_SIZE = 16;
-
-// ### GCM Mode
-// ### Constructor
-function Gcm(options) {
-  options = options || {};
-
-  this.name = "GCM";
-  this.cipher = options.cipher;
-  this.blockSize = this.blockSize || 16;
-}
-
-// ### exports
-module.exports = {
-  createCipher: function(options) {
-    var alg = new forge.aes.Algorithm("AES-GCM", Gcm);
-    alg.initialize({
-      key: new DataBuffer(options.key)
-    });
-    alg.mode.start(options);
-
-    return alg.mode;
-  },
-  createDecipher: function(options) {
-    var alg = new forge.aes.Algorithm("AES-GCM", Gcm);
-    alg.initialize({
-      key: new DataBuffer(options.key)
-    });
-    alg.mode._decrypt = true;
-    alg.mode.start(options);
-
-    return alg.mode;
-  }
-};
-
-// ### Public API
-Gcm.prototype.start = function(options) {
-  this.tag = null;
-
-  options = options || {};
-
-  if (!("iv" in options)) {
-    throw new Error("Gcm needs ParametersWithIV or AEADParameters");
-  }
-  this.nonce = options.iv;
-  if (this.nonce == null || this.nonce.length < 1) {
-    throw new Error("IV must be at least 1 byte");
-  }
-
-  // TODO: variable tagLength?
-  this.tagLength = 16;
-
-  // TODO: validate tag
-  if ("tag" in options) {
-    this.tag = new Buffer(options.tag);
-  }
-
-  var bufLength = !this._decrypt ?
-                  this.blockSize :
-                  (this.blockSize + this.tagLength);
-  this.bufBlock = new Buffer(bufLength);
-  this.bufBlock.fill(0);
-
-  var multiplier = options.multiplier;
-  if (multiplier == null) {
-    multiplier = new (multipliers["8k"])();
-  }
-  this.multiplier = multiplier;
-
-  this.H = this.zeroBlock();
-  cipherHelpers.encrypt(this.cipher, this.H, 0, this.H, 0);
-
-  // GcmMultiplier tables don"t change unless the key changes
-  // (and are expensive to init)
-  this.multiplier.init(this.H);
-  this.exp = null;
-
-  this.J0 = this.zeroBlock();
-
-  if (this.nonce.length === 12) {
-    this.nonce.copy(this.J0, 0, 0, this.nonce.length);
-    this.J0[this.blockSize - 1] = 0x01;
-  } else {
-    this.gHASH(this.J0, this.nonce, this.nonce.length);
-    var X = this.zeroBlock();
-    pack.longToBigEndian(new Long(this.nonce.length).
-                         multiply(8), X, 8);
-    this.gHASHBlock(this.J0, X);
-  }
-
-  this.S = this.zeroBlock();
-  this.SAt = this.zeroBlock();
-  this.SAtPre = this.zeroBlock();
-  this.atBlock = this.zeroBlock();
-  this.atBlockPos = 0;
-  this.atLength = Long.ZERO;
-  this.atLengthPre = Long.ZERO;
-  this.counter = new Buffer(this.J0);
-  this.bufOff = 0;
-  this.totalLength = Long.ZERO;
-
-  if ("additionalData" in options) {
-    this.processAADBytes(options.additionalData, 0, options.additionalData.length);
-  }
-};
-
-Gcm.prototype.update = function(inV, inOff, len, out, outOff) {
-  var resultLen = 0;
-
-  while (len > 0) {
-    var inLen = Math.min(len, this.bufBlock.length - this.bufOff);
-    inV.copy(this.bufBlock, this.bufOff, inOff, inOff + inLen);
-    len -= inLen;
-    inOff += inLen;
-    this.bufOff += inLen;
-    if (this.bufOff === this.bufBlock.length) {
-      this.outputBlock(out, outOff + resultLen);
-      resultLen += this.blockSize;
-    }
-  }
-
-  return resultLen;
-};
-Gcm.prototype.finish = function(out, outOff) {
-  var resultLen = 0;
-
-  if (this._decrypt) {
-    // append tag
-    resultLen += this.update(this.tag, 0, this.tag.length, out, outOff);
-  }
-
-  if (this.totalLength.isZero()) {
-    this.initCipher();
-  }
-
-  var extra = this.bufOff;
-  if (this._decrypt) {
-    if (extra < this.tagLength) {
-      throw new Error("data too short");
-    }
-    extra -= this.tagLength;
-  }
-
-  if (extra > 0) {
-    this.gCTRPartial(this.bufBlock, 0, extra, out, outOff + resultLen);
-    resultLen += extra;
-  }
-
-  this.atLength = this.atLength.add(this.atBlockPos);
-
-  // Final gHASH
-  var X = this.zeroBlock();
-  pack.longToBigEndian(this.atLength.multiply(8),
-                       X,
-                       0);
-  pack.longToBigEndian(this.totalLength.multiply(8),
-                       X,
-                       8);
-
-  this.gHASHBlock(this.S, X);
-
-  // TODO Fix this if tagLength becomes configurable
-  // T = MSBt(GCTRk(J0,S))
-  var tag = new Buffer(this.blockSize);
-  tag.fill(0);
-  cipherHelpers.encrypt(this.cipher, this.J0, 0, tag, 0);
-  this.xor(tag, this.S);
-
-  if (this._decrypt) {
-    if (!helpers.arrayEqual(this.tag, tag)) {
-      throw new Error("mac check in Gcm failed");
-    }
-  } else {
-    // We place into tag our calculated value for T
-    this.tag = new Buffer(this.tagLength);
-    tag.copy(this.tag, 0, 0, this.tagLength);
-  }
-
-  return resultLen;
-};
-
-// ### "Internal" Helper Functions
-Gcm.prototype.initCipher = function() {
-  if (this.atLength.greaterThan(Long.ZERO)) {
-    this.SAt.copy(this.SAtPre, 0, 0, this.blockSize);
-    this.atLengthPre = this.atLength.add(Long.ZERO);
-  }
-
-  // Finish hash for partial AAD block
-  if (this.atBlockPos > 0) {
-    this.gHASHPartial(this.SAtPre, this.atBlock, 0, this.atBlockPos);
-    this.atLengthPre = this.atLengthPre.add(this.atBlockPos);
-  }
-
-  if (this.atLengthPre.greaterThan(Long.ZERO)) {
-    this.SAtPre.copy(this.S, 0, 0, this.blockSize);
-  }
-};
-
-Gcm.prototype.outputBlock = function(output, offset) {
-  if (this.totalLength.isZero()) {
-    this.initCipher();
-  }
-  this.gCTRBlock(this.bufBlock, output, offset);
-  if (!this._decrypt) {
-    this.bufOff = 0;
-  } else {
-    this.bufBlock.copy(this.bufBlock, 0, this.blockSize, this.blockSize + this.tagLength);
-    this.bufOff = this.tagLength;
-  }
-};
-
-Gcm.prototype.processAADBytes = function(inV, inOff, len) {
-  for (var i = 0; i < len; ++i) {
-    this.atBlock[this.atBlockPos] = inV[inOff + i];
-    if (++this.atBlockPos === this.blockSize) {
-      // Hash each block as it fills
-      this.gHASHBlock(this.SAt, this.atBlock);
-      this.atBlockPos = 0;
-      this.atLength = this.atLength.add(this.blockSize);
-    }
-  }
-};
-
-Gcm.prototype.getNextCounterBlock = function() {
-  for (var i = 15; i >= 12; --i) {
-    var b = ((this.counter[i] + 1) & 0xff);
-    this.counter[i] = b;
-
-    if (b !== 0) {
-      break;
-    }
-  }
-
-  // encrypt counter
-  var outb = new Buffer(this.blockSize);
-  outb.fill(0);
-  cipherHelpers.encrypt(this.cipher, this.counter, 0, outb, 0);
-
-  return outb;
-};
-
-Gcm.prototype.gCTRBlock = function(block, out, outOff) {
-  var tmp = this.getNextCounterBlock();
-
-  this.xor(tmp, block);
-  tmp.copy(out, outOff, 0, this.blockSize);
-
-  this.gHASHBlock(this.S, !this._decrypt ? tmp : block);
-
-  this.totalLength = this.totalLength.add(this.blockSize);
-};
-Gcm.prototype.gCTRPartial = function(buf, off, len, out, outOff) {
-  var tmp = this.getNextCounterBlock();
-
-  this.xor(tmp, buf, off, len);
-  tmp.copy(out, outOff, 0, len);
-
-  this.gHASHPartial(this.S, !this._decrypt ? tmp : buf, 0, len);
-
-  this.totalLength = this.totalLength.add(len);
-};
-
-Gcm.prototype.gHASHBlock = function(Y, b) {
-  this.xor(Y, b);
-  this.multiplier.multiplyH(Y);
-};
-Gcm.prototype.gHASHPartial = function(Y, b, off, len) {
-  this.xor(Y, b, off, len);
-  this.multiplier.multiplyH(Y);
-};
-
-Gcm.prototype.xor = function(block, val, off, len) {
-  switch (arguments.length) {
-    case 2:
-      for (var i = 15; i >= 0; --i) {
-        block[i] ^= val[i];
-      }
-      break;
-    case 4:
-      while (len-- > 0) {
-        block[len] ^= val[off + len];
-      }
-      break;
-    default:
-      throw new TypeError("Expected 2 or 4 arguments.");
-  }
-
-  return block;
-};
-
-Gcm.prototype.zeroBlock = function() {
-  var block = new Buffer(BLOCK_SIZE);
-  block.fill(0);
-  return block;
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../../../deps/forge.js":103,"../../../util/databuffer.js":127,"../helpers.js":98,"../pack.js":99,"./helpers.js":95,"./multipliers.js":97,"buffer":140,"long":45}],97:[function(require,module,exports){
-/*!
- * deps/ciphermodes/gcm/multipliers.js - AES-GCM Multipliers
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
- "use strict";
-
-var helpers = require("./helpers.js"),
-    pack = require("../pack.js");
-
-
-// ### 8K Table Multiplier
-function Gcm8KMultiplier() {
-  this.H = [];
-  this.M = null;
-}
-
-Gcm8KMultiplier.prototype.init = function(H) {
-  var i, j, k;
-  if (this.M == null) {
-    // sc: I realize this UGLY...
-    //M = new int[32][16][4];
-    this.M = [];
-    for (i = 0; i < 32; ++i) {
-      this.M[i] = [];
-      for (j = 0; j < 16; ++j) {
-        this.M[i][j] = [];
-        for (k = 0; k < 4; ++k) {
-          this.M[i][j][k] = 0;
-        }
-      }
-    }
-  } else if (helpers.arrayEqual(this.H, H)) {
-    return;
-  }
-
-  this.H = H.slice();
-
-  // M[0][0] is ZEROES;
-  // M[1][0] is ZEROES;
-  helpers.asInts(H, this.M[1][8]);
-
-  for (j = 4; j >= 1; j >>= 1) {
-    helpers.multiplyP(this.M[1][j + j], this.M[1][j]);
-  }
-  helpers.multiplyP(this.M[1][1], this.M[0][8]);
-
-  for (j = 4; j >= 1; j >>= 1) {
-    helpers.multiplyP(this.M[0][j + j], this.M[0][j]);
-  }
-
-  i = 0;
-  for (;;) {
-    for (j = 2; j < 16; j += j) {
-      for (k = 1; k < j; ++k) {
-        helpers.xor(this.M[i][j], this.M[i][k], this.M[i][j + k]);
-      }
-    }
-
-    if (++i === 32) {
-      return;
-    }
-
-    if (i > 1) {
-      // M[i][0] is ZEROES;
-      for (j = 8; j > 0; j >>= 1) {
-        helpers.multiplyP8(this.M[i - 2][j], this.M[i][j]);
-      }
-    }
-  }
-};
-Gcm8KMultiplier.prototype.multiplyH = function(x) {
-  var z = [];
-  for (var i = 15; i >= 0; --i) {
-    var m = this.M[i + i][x[i] & 0x0f];
-    z[0] ^= m[0];
-    z[1] ^= m[1];
-    z[2] ^= m[2];
-    z[3] ^= m[3];
-    m = this.M[i + i + 1][(x[i] & 0xf0) >>> 4];
-    z[0] ^= m[0];
-    z[1] ^= m[1];
-    z[2] ^= m[2];
-    z[3] ^= m[3];
-  }
-
-  pack.intToBigEndian(z, x, 0);
-};
-
-
-module.exports = {
-  "8k": Gcm8KMultiplier
-};
-
-},{"../pack.js":99,"./helpers.js":95}],98:[function(require,module,exports){
-/*!
- * deps/ciphermodes/helpers.js - Cipher Helper Functions
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var pack = require("./pack.js");
-
-function doEncrypt(cipher, inb, inOff, outb, outOff) {
-  var input = new Array(4),
-      output = new Array(4);
-
-  pack.bigEndianToInt(inb, inOff, input);
-  cipher.encrypt(input, output);
-  pack.intToBigEndian(output, outb, outOff);
-}
-
-module.exports = {
-  encrypt: doEncrypt
-};
-
-},{"./pack.js":99}],99:[function(require,module,exports){
-(function (Buffer){
-/*!
- * deps/ciphermodes/pack.js - Pack/Unpack Functions
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var Long = require("long");
-
-var pack = module.exports = {
-  intToBigEndian: function(n, bs, off) {
-    if (typeof n === "number") {
-      switch (arguments.length) {
-        case 1:
-          bs = new Buffer(4);
-          bs.fill(0);
-          pack.intToBigEndian(n, bs, 0);
-          break;
-        case 3:
-          bs[off] = 0xff & (n >>> 24);
-          bs[++off] = 0xff & (n >>> 16);
-          bs[++off] = 0xff & (n >>> 8);
-          bs[++off] = 0xff & (n);
-          break;
-        default:
-          throw new TypeError("Expected 1 or 3 arguments.");
-      }
-    } else {
-      switch (arguments.length) {
-        case 1:
-          bs = new Buffer(4 * n.length);
-          bs.fill(0);
-          pack.intToBigEndian(n, bs, 0);
-          break;
-        case 3:
-          for (var i = 0; i < n.length; ++i) {
-            pack.intToBigEndian(n[i], bs, off);
-            off += 4;
-          }
-          break;
-        default:
-          throw new TypeError("Expected 1 or 3 arguments.");
-      }
-    }
-
-    return bs;
-  },
-  longToBigEndian: function(n, bs, off) {
-    if (!Array.isArray(n)) {
-      // Single
-      switch (arguments.length) {
-        case 1:
-          bs = new Buffer(8);
-          bs.fill(0);
-          pack.longToBigEndian(n, bs, 0);
-          break;
-        case 3:
-          var lo = n.low,
-              hi = n.high;
-          pack.intToBigEndian(hi, bs, off);
-          pack.intToBigEndian(lo, bs, off + 4);
-          break;
-        default:
-          throw new TypeError("Expected 1 or 3 arguments.");
-      }
-    } else {
-      // Array
-      switch (arguments.length) {
-        case 1:
-          bs = new Buffer(8 * n.length);
-          bs.fill(0);
-          pack.longToBigEndian(n, bs, 0);
-          break;
-        case 3:
-          for (var i = 0; i < n.length; ++i) {
-            pack.longToBigEndian(n[i], bs, off);
-            off += 8;
-          }
-          break;
-        default:
-          throw new TypeError("Expected 1 or 3 arguments.");
-      }
-    }
-
-    return bs;
-  },
-
-  bigEndianToInt: function(bs, off, ns) {
-    switch (arguments.length) {
-      case 2:
-        var n = bs[off] << 24;
-        n |= (bs[++off] & 0xff) << 16;
-        n |= (bs[++off] & 0xff) << 8;
-        n |= (bs[++off] & 0xff);
-        return n;
-      case 3:
-        for (var i = 0; i < ns.length; ++i) {
-          ns[i] = pack.bigEndianToInt(bs, off);
-          off += 4;
-        }
-        break;
-      default:
-        throw new TypeError("Expected 2 or 3 arguments.");
-    }
-  },
-  bigEndianToLong: function(bs, off, ns) {
-    switch (arguments.length) {
-      case 2:
-        var hi = pack.bigEndianToInt(bs, off);
-        var lo = pack.bigEndianToInt(bs, off + 4);
-        var num = new Long(lo, hi);
-        return num;
-      case 3:
-        for (var i = 0; i < ns.length; ++i) {
-          ns[i] = pack.bigEndianToLong(bs, off);
-          off += 8;
-        }
-        break;
-      default:
-        throw new TypeError("Expected 2 or 3 arguments.");
-    }
-  }
-};
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":140,"long":45}],100:[function(require,module,exports){
-/**
- * deps/ecc/curves.js - Elliptic Curve NIST/SECG/X9.62 Parameters
- * Original Copyright (c) 2003-2005  Tom Wu.
- * Modifications Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- *
- * Ported from Tom Wu, which is ported from BouncyCastle
- * Modified to reuse existing external NPM modules, restricted to the
- * NIST//SECG/X9.62 prime curves only, and formatted to match project
- * coding styles.
- */
-"use strict";
-
-// Named EC curves
-
-var BigInteger = require("jsbn").BigInteger,
-    ec = require("./math.js");
-
-// ----------------
-// X9ECParameters
-
-// constructor
-function X9ECParameters(curve, g, n, h) {
-  this.curve = curve;
-  this.g = g;
-  this.n = n;
-  this.h = h;
-}
-
-function x9getCurve() {
-  return this.curve;
-}
-
-function x9getG() {
-  return this.g;
-}
-
-function x9getN() {
-  return this.n;
-}
-
-function x9getH() {
-  return this.h;
-}
-
-X9ECParameters.prototype.getCurve = x9getCurve;
-X9ECParameters.prototype.getG = x9getG;
-X9ECParameters.prototype.getN = x9getN;
-X9ECParameters.prototype.getH = x9getH;
-
-// ----------------
-// SECNamedCurves
-
-function fromHex(s) { return new BigInteger(s, 16); }
-
-function secp256r1() {
-  // p = 2^224 (2^32 - 1) + 2^192 + 2^96 - 1
-  var p = fromHex("FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF");
-  var a = fromHex("FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFC");
-  var b = fromHex("5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B");
-  var n = fromHex("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551");
-  var h = BigInteger.ONE;
-  var curve = new ec.ECCurveFp(p, a, b);
-  var G = curve.decodePointHex("04"
-              + "6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296"
-              + "4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5");
-  return new X9ECParameters(curve, G, n, h);
-}
-
-function secp384r1() {
-  // p = 2^384 - 2^128 - 2^96 + 2^32 - 1
-  var p = fromHex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF");
-  var a = fromHex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFC");
-  var b = fromHex("B3312FA7E23EE7E4988E056BE3F82D19181D9C6EFE8141120314088F5013875AC656398D8A2ED19D2A85C8EDD3EC2AEF");
-  var n = fromHex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52973");
-  var h = BigInteger.ONE;
-  var curve = new ec.ECCurveFp(p, a, b);
-  var G = curve.decodePointHex("04"
-              + "AA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7"
-              + "3617DE4A96262C6F5D9E98BF9292DC29F8F41DBD289A147CE9DA3113B5F0B8C00A60B1CE1D7E819D7A431D7C90EA0E5F");
-  return new X9ECParameters(curve, G, n, h);
-}
-
-function secp521r1() {
-  // p = 2^521 - 1
-  var p = fromHex("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
-  var a = fromHex("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC");
-  var b = fromHex("0051953EB9618E1C9A1F929A21A0B68540EEA2DA725B99B315F3B8B489918EF109E156193951EC7E937B1652C0BD3BB1BF073573DF883D2C34F1EF451FD46B503F00");
-  var n = fromHex("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA51868783BF2F966B7FCC0148F709A5D03BB5C9B8899C47AEBB6FB71E91386409");
-  var h = BigInteger.ONE;
-  var curve = new ec.ECCurveFp(p, a, b);
-  var G = curve.decodePointHex("04"
-                + "00C6858E06B70404E9CD9E3ECB662395B4429C648139053FB521F828AF606B4D3DBAA14B5E77EFE75928FE1DC127A2FFA8DE3348B3C1856A429BF97E7E31C2E5BD66"
-                + "011839296A789A3BC0045C8A5FB42C7D1BD998F54449579B446817AFBD17273E662C97EE72995EF42640C550B9013FAD0761353C7086A272C24088BE94769FD16650");
-  return new X9ECParameters(curve, G, n, h);
-}
-
-// ----------------
-// Public API
-
-var CURVES = module.exports = {
-  "secp256r1": secp256r1(),
-  "secp384r1": secp384r1(),
-  "secp521r1": secp521r1()
-};
-
-// also export NIST names
-CURVES["P-256"] = CURVES.secp256r1;
-CURVES["P-384"] = CURVES.secp384r1;
-CURVES["P-521"] = CURVES.secp521r1;
-
-},{"./math.js":102,"jsbn":2}],101:[function(require,module,exports){
-(function (Buffer){
-/**
- * deps/ecc/index.js - Elliptic Curve Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var forge = require("../../deps/forge"),
-    BigInteger = require("jsbn").BigInteger,
-    ec = require("./math.js"),
-    CURVES = require("./curves.js");
-
-// ### Helpers
-function hex2bn(s) {
-  return new BigInteger(s, 16);
-}
-
-function bn2bin(bn, len) {
-  if (!len) {
-    len = Math.ceil(bn.bitLength() / 8);
-  }
-  len = len * 2;
-
-  var hex = bn.toString(16);
-  // truncate-left if too large
-  hex = hex.substring(Math.max(hex.length - len, 0));
-  // pad-left if too small
-  while (len > hex.length) {
-    hex = "0" + hex;
-  }
-
-  return new Buffer(hex, "hex");
-}
-function bin2bn(s) {
-  if ("string" === typeof s) {
-    s = new Buffer(s, "binary");
-  }
-  return hex2bn(s.toString("hex"));
-}
-
-function keySizeBytes(params) {
-  return Math.ceil(params.getN().bitLength() / 8);
-}
-
-function namedCurve(curve) {
-  var params = CURVES[curve];
-  if (!params) {
-    throw new TypeError("unsupported named curve: " + curve);
-  }
-
-  return params;
-}
-
-function normalizeEcdsa(params, md) {
-  var log2n = params.getN().bitLength(),
-      mdLen = md.length * 8;
-
-  var e = bin2bn(md);
-  if (log2n < mdLen) {
-    e = e.shiftRight(mdLen - log2n);
-  }
-
-  return e;
-}
-
-// ### EC Public Key
-
-/**
- *
- * @param {String} curve The named curve
- * @param {BigInteger} x The X coordinate
- * @param {BigInteger} y The Y coordinate
- */
-function ECPublicKey(curve, x, y) {
-  var params = namedCurve(curve),
-      c = params.getCurve();
-  var key = new ec.ECPointFp(c,
-                             c.fromBigInteger(x),
-                             c.fromBigInteger(y));
-
-  this.curve = curve;
-  this.params = params;
-  this.point = key;
-
-  var size = keySizeBytes(params);
-  this.x = bn2bin(x, size);
-  this.y = bn2bin(y, size);
-}
-
-// ECDSA
-ECPublicKey.prototype.verify = function(md, sig) {
-  var N = this.params.getN(),
-      G = this.params.getG();
-
-  // prepare and validate (r, s)
-  var r = bin2bn(sig.r),
-      s = bin2bn(sig.s);
-  if (r.compareTo(BigInteger.ONE) < 0 || r.compareTo(N) >= 0) {
-    return false;
-  }
-  if (s.compareTo(BigInteger.ONE) < 0 || r.compareTo(N) >= 0) {
-    return false;
-  }
-
-  // normalize input
-  var e = normalizeEcdsa(this.params, md);
-  // verify (r, s)
-  var w = s.modInverse(N),
-      u1 = e.multiply(w).mod(N),
-      u2 = r.multiply(w).mod(N);
-
-  var v = G.multiplyTwo(u1, this.point, u2).getX().toBigInteger();
-  v = v.mod(N);
-
-  return v.equals(r);
-};
-
-// ### EC Private Key
-
-/**
- * @param {String} curve The named curve
- * @param {Buffer} key The private key value
- */
-function ECPrivateKey(curve, key) {
-  var params = namedCurve(curve);
-  this.curve = curve;
-  this.params = params;
-
-  var size = keySizeBytes(params);
-  this.d = bn2bin(key, size);
-}
-
-ECPrivateKey.prototype.toPublicKey = function() {
-  var d = bin2bn(this.d);
-  var P = this.params.getG().multiply(d);
-  return new ECPublicKey(this.curve,
-                         P.getX().toBigInteger(),
-                         P.getY().toBigInteger());
-};
-
-// ECDSA
-ECPrivateKey.prototype.sign = function(md) {
-  var keysize = keySizeBytes(this.params),
-      N = this.params.getN(),
-      G = this.params.getG(),
-      e = normalizeEcdsa(this.params, md),
-      d = bin2bn(this.d);
-
-  var r, s;
-  var k, x1, z;
-  do {
-    do {
-      // determine random nonce
-      do {
-        k = bin2bn(forge.random.getBytes(keysize));
-      } while (k.equals(BigInteger.ZERO) || k.compareTo(N) >= 0);
-      // (x1, y1) = k * G
-      x1 = G.multiply(k).getX().toBigInteger();
-      // r = x1 mod N
-      r = x1.mod(N);
-    } while (r.equals(BigInteger.ZERO));
-    // s = (k^-1 * (e + r * d)) mod N
-    z = d.multiply(r);
-    z = e.add(z);
-    s = k.modInverse(N).multiply(z).mod(N);
-  } while (s.equals(BigInteger.ONE));
-
-  // convert (r, s) to bytes
-  var len = keySizeBytes(this.params);
-  r = bn2bin(r, len);
-  s = bn2bin(s, len);
-
-  return {
-    r: r,
-    s: s
-  };
-};
-
-// ECDH
-ECPrivateKey.prototype.computeSecret = function(pubkey) {
-  var d = bin2bn(this.d);
-  var S = pubkey.point.multiply(d).getX().toBigInteger();
-  S = bn2bin(S, keySizeBytes(this.params));
-  return S;
-};
-
-// ### Public API
-exports.generateKeyPair = function(curve) {
-  var params = namedCurve(curve),
-      n = params.getN();
-
-  // generate random within range [1, N-1)
-  var r = forge.random.getBytes(keySizeBytes(params));
-  r = bin2bn(r);
-
-  var n1 = n.subtract(BigInteger.ONE);
-  var d = r.mod(n1).add(BigInteger.ONE);
-
-  var privkey = new ECPrivateKey(curve, d),
-      pubkey = privkey.toPublicKey();
-
-  return {
-    "private": privkey,
-    "public": pubkey
-  };
-};
-
-exports.asPublicKey = function(curve, x, y) {
-  if ("string" === typeof x) {
-    x = hex2bn(x);
-  } else if (Buffer.isBuffer(x)) {
-    x = bin2bn(x);
-  }
-
-  if ("string" === typeof y) {
-    y = hex2bn(y);
-  } else if (Buffer.isBuffer(y)) {
-    y = bin2bn(y);
-  }
-
-  var pubkey = new ECPublicKey(curve, x, y);
-  return pubkey;
-};
-exports.asPrivateKey = function(curve, d) {
-  // Elaborate way to get to a Buffer from a (String|Buffer|BigInteger)
-  if ("string" === typeof d) {
-    d = hex2bn(d);
-  } else if (Buffer.isBuffer(d)) {
-    d = bin2bn(d);
-  }
-
-  var privkey = new ECPrivateKey(curve, d);
-  return privkey;
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../../deps/forge":103,"./curves.js":100,"./math.js":102,"buffer":140,"jsbn":2}],102:[function(require,module,exports){
-/**
- * deps/ecc/math.js - Elliptic Curve Math
- * Original Copyright (c) 2003-2005  Tom Wu.
- * Modifications Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- *
- * Ported from Tom Wu, which is ported from BouncyCastle
- * Modified to reuse existing external NPM modules, restricted to the
- * NIST//SECG/X9.62 prime curves only, and formatted to match project
- * coding styles.
- */
-"use strict";
-
-// Basic Javascript Elliptic Curve implementation
-// Ported loosely from BouncyCastle's Java EC code
-// Only Fp curves implemented for now
-
-// Requires jsbn.js and jsbn2.js
-var jsbn = require("jsbn");
-
-var BigInteger = jsbn.BigInteger,
-    Barrett = BigInteger.prototype.Barrett;
-
-// ----------------
-// ECFieldElementFp
-
-// constructor
-function ECFieldElementFp(q, x) {
-  this.x = x;
-  // TODO if(x.compareTo(q) >= 0) error
-  this.q = q;
-}
-
-function feFpEquals(other) {
-  if (other === this) {
-    return true;
-  }
-  return (this.q.equals(other.q) && this.x.equals(other.x));
-}
-
-function feFpToBigInteger() {
-  return this.x;
-}
-
-function feFpNegate() {
-  return new ECFieldElementFp(this.q, this.x.negate().mod(this.q));
-}
-
-function feFpAdd(b) {
-  return new ECFieldElementFp(this.q, this.x.add(b.toBigInteger()).mod(this.q));
-}
-
-function feFpSubtract(b) {
-  return new ECFieldElementFp(this.q, this.x.subtract(b.toBigInteger()).mod(this.q));
-}
-
-function feFpMultiply(b) {
-  return new ECFieldElementFp(this.q, this.x.multiply(b.toBigInteger()).mod(this.q));
-}
-
-function feFpSquare() {
-  return new ECFieldElementFp(this.q, this.x.square().mod(this.q));
-}
-
-function feFpDivide(b) {
-  return new ECFieldElementFp(this.q, this.x.multiply(b.toBigInteger().modInverse(this.q)).mod(this.q));
-}
-
-ECFieldElementFp.prototype.equals = feFpEquals;
-ECFieldElementFp.prototype.toBigInteger = feFpToBigInteger;
-ECFieldElementFp.prototype.negate = feFpNegate;
-ECFieldElementFp.prototype.add = feFpAdd;
-ECFieldElementFp.prototype.subtract = feFpSubtract;
-ECFieldElementFp.prototype.multiply = feFpMultiply;
-ECFieldElementFp.prototype.square = feFpSquare;
-ECFieldElementFp.prototype.divide = feFpDivide;
-
-// ----------------
-// ECPointFp
-
-// constructor
-function ECPointFp(curve, x, y, z) {
-  this.curve = curve;
-  this.x = x;
-  this.y = y;
-  // Projective coordinates: either zinv == null or z * zinv == 1
-  // z and zinv are just BigIntegers, not fieldElements
-  if (!z) {
-    this.z = BigInteger.ONE;
-  } else {
-    this.z = z;
-  }
-  this.zinv = null;
-  //TODO: compression flag
-}
-
-function pointFpGetX() {
-  if(!this.zinv) {
-    this.zinv = this.z.modInverse(this.curve.q);
-  }
-  var r = this.x.toBigInteger().multiply(this.zinv);
-  this.curve.reduce(r);
-  return this.curve.fromBigInteger(r);
-}
-
-function pointFpGetY() {
-  if(!this.zinv) {
-    this.zinv = this.z.modInverse(this.curve.q);
-  }
-  var r = this.y.toBigInteger().multiply(this.zinv);
-  this.curve.reduce(r);
-  return this.curve.fromBigInteger(r);
-}
-
-function pointFpEquals(other) {
-  if (other === this) {
-    return true;
-  }
-  if (this.isInfinity()) {
-    return other.isInfinity();
-  }
-  if (other.isInfinity()) {
-    return this.isInfinity();
-  }
-  var u, v;
-  // u = Y2 * Z1 - Y1 * Z2
-  u = other.y.toBigInteger().multiply(this.z).subtract(this.y.toBigInteger().multiply(other.z)).mod(this.curve.q);
-  if (!u.equals(BigInteger.ZERO)) {
-    return false;
-  }
-  // v = X2 * Z1 - X1 * Z2
-  v = other.x.toBigInteger().multiply(this.z).subtract(this.x.toBigInteger().multiply(other.z)).mod(this.curve.q);
-  return v.equals(BigInteger.ZERO);
-}
-
-function pointFpIsInfinity() {
-  if ((this.x == null) && (this.y == null)) {
-    return true;
-  }
-  return (this.z.equals(BigInteger.ZERO) && !this.y.toBigInteger().equals(BigInteger.ZERO));
-}
-
-function pointFpNegate() {
-    return new ECPointFp(this.curve, this.x, this.y.negate(), this.z);
-}
-
-function pointFpAdd(b) {
-  if (this.isInfinity()) {
-    return b;
-  }
-  if (b.isInfinity()) {
-    return this;
-  }
-
-  // u = Y2 * Z1 - Y1 * Z2
-  var u = b.y.toBigInteger().multiply(this.z).subtract(this.y.toBigInteger().multiply(b.z)).mod(this.curve.q);
-  // v = X2 * Z1 - X1 * Z2
-  var v = b.x.toBigInteger().multiply(this.z).subtract(this.x.toBigInteger().multiply(b.z)).mod(this.curve.q);
-
-  if (BigInteger.ZERO.equals(v)) {
-    if (BigInteger.ZERO.equals(u)) {
-      return this.twice(); // this == b, so double
-    }
-    return this.curve.getInfinity(); // this = -b, so infinity
-  }
-
-  var THREE = new BigInteger("3");
-  var x1 = this.x.toBigInteger();
-  var y1 = this.y.toBigInteger();
-
-  var v2 = v.square();
-  var v3 = v2.multiply(v);
-  var x1v2 = x1.multiply(v2);
-  var zu2 = u.square().multiply(this.z);
-
-  // x3 = v * (z2 * (z1 * u^2 - 2 * x1 * v^2) - v^3)
-  var x3 = zu2.subtract(x1v2.shiftLeft(1)).multiply(b.z).subtract(v3).multiply(v).mod(this.curve.q);
-  // y3 = z2 * (3 * x1 * u * v^2 - y1 * v^3 - z1 * u^3) + u * v^3
-  var y3 = x1v2.multiply(THREE).multiply(u).subtract(y1.multiply(v3)).subtract(zu2.multiply(u)).multiply(b.z).add(u.multiply(v3)).mod(this.curve.q);
-  // z3 = v^3 * z1 * z2
-  var z3 = v3.multiply(this.z).multiply(b.z).mod(this.curve.q);
-
-  return new ECPointFp(this.curve, this.curve.fromBigInteger(x3), this.curve.fromBigInteger(y3), z3);
-}
-
-function pointFpTwice() {
-  if(this.isInfinity()) {
-    return this;
-  }
-  if (this.y.toBigInteger().signum() === 0) {
-    return this.curve.getInfinity();
-  }
-
-  // TODO: optimized handling of constants
-  var THREE = new BigInteger("3");
-  var x1 = this.x.toBigInteger();
-  var y1 = this.y.toBigInteger();
-
-  var y1z1 = y1.multiply(this.z);
-  var y1sqz1 = y1z1.multiply(y1).mod(this.curve.q);
-  var a = this.curve.a.toBigInteger();
-
-  // w = 3 * x1^2 + a * z1^2
-  var w = x1.square().multiply(THREE);
-  if (!BigInteger.ZERO.equals(a)) {
-    w = w.add(this.z.square().multiply(a));
-  }
-  w = w.mod(this.curve.q);
-  //this.curve.reduce(w);
-  // x3 = 2 * y1 * z1 * (w^2 - 8 * x1 * y1^2 * z1)
-  var x3 = w.square().subtract(x1.shiftLeft(3).multiply(y1sqz1)).shiftLeft(1).multiply(y1z1).mod(this.curve.q);
-  // y3 = 4 * y1^2 * z1 * (3 * w * x1 - 2 * y1^2 * z1) - w^3
-  var y3 = w.multiply(THREE).multiply(x1).subtract(y1sqz1.shiftLeft(1)).shiftLeft(2).multiply(y1sqz1).subtract(w.square().multiply(w)).mod(this.curve.q);
-  // z3 = 8 * (y1 * z1)^3
-  var z3 = y1z1.square().multiply(y1z1).shiftLeft(3).mod(this.curve.q);
-
-  return new ECPointFp(this.curve, this.curve.fromBigInteger(x3), this.curve.fromBigInteger(y3), z3);
-}
-
-// Simple NAF (Non-Adjacent Form) multiplication algorithm
-// TODO: modularize the multiplication algorithm
-function pointFpMultiply(k) {
-  if (this.isInfinity()) {
-    return this;
-  }
-  if (k.signum() === 0) {
-    return this.curve.getInfinity();
-  }
-
-  var e = k;
-  var h = e.multiply(new BigInteger("3"));
-
-  var neg = this.negate();
-  var R = this;
-
-  var i;
-  for(i = h.bitLength() - 2; i > 0; --i) {
-    R = R.twice();
-
-    var hBit = h.testBit(i);
-    var eBit = e.testBit(i);
-
-    if (hBit !== eBit) {
-      R = R.add(hBit ? this : neg);
-    }
-  }
-
-  return R;
-}
-
-// Compute this*j + x*k (simultaneous multiplication)
-function pointFpMultiplyTwo(j, x, k) {
-  var i;
-  if (j.bitLength() > k.bitLength()) {
-    i = j.bitLength() - 1;
-  } else {
-    i = k.bitLength() - 1;
-  }
-
-  var R = this.curve.getInfinity();
-  var both = this.add(x);
-  while (i >= 0) {
-    R = R.twice();
-    if (j.testBit(i)) {
-      if (k.testBit(i)) {
-        R = R.add(both);
-      }
-      else {
-        R = R.add(this);
-      }
-    }
-    else {
-      if (k.testBit(i)) {
-        R = R.add(x);
-      }
-    }
-    --i;
-  }
-
-  return R;
-}
-
-ECPointFp.prototype.getX = pointFpGetX;
-ECPointFp.prototype.getY = pointFpGetY;
-ECPointFp.prototype.equals = pointFpEquals;
-ECPointFp.prototype.isInfinity = pointFpIsInfinity;
-ECPointFp.prototype.negate = pointFpNegate;
-ECPointFp.prototype.add = pointFpAdd;
-ECPointFp.prototype.twice = pointFpTwice;
-ECPointFp.prototype.multiply = pointFpMultiply;
-ECPointFp.prototype.multiplyTwo = pointFpMultiplyTwo;
-
-// ----------------
-// ECCurveFp
-
-// constructor
-function ECCurveFp(q, a, b) {
-  this.q = q;
-  this.a = this.fromBigInteger(a);
-  this.b = this.fromBigInteger(b);
-  this.infinity = new ECPointFp(this, null, null);
-  this.reducer = new Barrett(this.q);
-}
-
-function curveFpGetQ() {
-  return this.q;
-}
-
-function curveFpGetA() {
-  return this.a;
-}
-
-function curveFpGetB() {
-  return this.b;
-}
-
-function curveFpEquals(other) {
-  if (other === this) {
-    return true;
-  }
-  return (this.q.equals(other.q) && this.a.equals(other.a) && this.b.equals(other.b));
-}
-
-function curveFpGetInfinity() {
-  return this.infinity;
-}
-
-function curveFpFromBigInteger(x) {
-  return new ECFieldElementFp(this.q, x);
-}
-
-function curveReduce(x) {
-  this.reducer.reduce(x);
-}
-
-// for now, work with hex strings because they're easier in JS
-function curveFpDecodePointHex(s) {
-  switch (parseInt(s.substring(0, 2), 16)) {
-    // first byte
-    case 0:
-      return this.infinity;
-    case 2:
-    case 3:
-      // point compression not supported yet
-      return null;
-    case 4:
-    case 6:
-    case 7:
-      var len = (s.length - 2) / 2;
-      var xHex = s.substr(2, len);
-      var yHex = s.substr(len + 2, len);
-
-      return new ECPointFp(this,
-                           this.fromBigInteger(new BigInteger(xHex, 16)),
-                           this.fromBigInteger(new BigInteger(yHex, 16)));
-
-    default: // unsupported
-      return null;
-    }
-}
-
-function curveFpEncodePointHex(p) {
-  if (p.isInfinity()) {
-    return "00";
-  }
-  var xHex = p.getX().toBigInteger().toString(16);
-  var yHex = p.getY().toBigInteger().toString(16);
-  var oLen = this.getQ().toString(16).length;
-  if ((oLen % 2) !== 0) {
-    oLen++;
-  }
-  while (xHex.length < oLen) {
-    xHex = "0" + xHex;
-  }
-  while (yHex.length < oLen) {
-    yHex = "0" + yHex;
-  }
-  return "04" + xHex + yHex;
-}
-
-ECCurveFp.prototype.getQ = curveFpGetQ;
-ECCurveFp.prototype.getA = curveFpGetA;
-ECCurveFp.prototype.getB = curveFpGetB;
-ECCurveFp.prototype.equals = curveFpEquals;
-ECCurveFp.prototype.getInfinity = curveFpGetInfinity;
-ECCurveFp.prototype.fromBigInteger = curveFpFromBigInteger;
-ECCurveFp.prototype.reduce = curveReduce;
-ECCurveFp.prototype.decodePointHex = curveFpDecodePointHex;
-ECCurveFp.prototype.encodePointHex = curveFpEncodePointHex;
-
-// Exports
-module.exports = {
-  ECFieldElementFp: ECFieldElementFp,
-  ECPointFp: ECPointFp,
-  ECCurveFp: ECCurveFp
-};
-
-},{"jsbn":2}],103:[function(require,module,exports){
-/*!
- * deps/forge.js - Forge Package Customization
- *
- * Copyright (c) 2015 Cisco Systems, Inc.  See LICENSE file.
- */
-"use strict";
-
-var forge = {
-  aes: require("node-forge/js/aes"),
-  asn1: require("node-forge/js/asn1"),
-  cipher: require("node-forge/js/cipher"),
-  hmac: require("node-forge/js/hmac"),
-  jsbn: require("node-forge/js/jsbn"),
-  md: require("node-forge/js/md"),
-  mgf: require("node-forge/js/mgf"),
-  pem: require("node-forge/js/pem"),
-  pkcs1: require("node-forge/js/pkcs1"),
-  pkcs5: require("node-forge/js/pkcs5"),
-  pkcs7: require("node-forge/js/pkcs7"),
-  pki: require("node-forge/js/x509"),
-  prime: require("node-forge/js/prime"),
-  prng: require("node-forge/js/prng"),
-  pss: require("node-forge/js/pss"),
-  random: require("node-forge/js/random"),
-  util: require("node-forge/js/util")
-};
-
-// load hash algorithms
-require("node-forge/js/sha1");
-require("node-forge/js/sha256");
-require("node-forge/js/sha512");
-
-// load symmetric cipherModes
-require("node-forge/js/cipherModes");
-
-// load AES cipher suites
-// TODO: move this to a separate file
-require("node-forge/js/aesCipherSuites");
-
-// Define AES "raw" cipher mode
-function modeRaw(options) {
-  options = options || {};
-  this.name = "";
-  this.cipher = options.cipher;
-  this.blockSize = options.blockSize || 16;
-  this._blocks = this.blockSize / 4;
-  this._inBlock = new Array(this._blocks);
-  this._outBlock = new Array(this._blocks);
-}
-
-modeRaw.prototype.start = function() {};
-
-modeRaw.prototype.encrypt = function(input, output) {
-  var i;
-
-  // get next block
-  for(i = 0; i < this._blocks; ++i) {
-    this._inBlock[i] = input.getInt32();
-  }
-
-  // encrypt block
-  this.cipher.encrypt(this._inBlock, this._outBlock);
-
-  // write output
-  for(i = 0; i < this._blocks; ++i) {
-    output.putInt32(this._outBlock[i]);
-  }
-};
-
-modeRaw.prototype.decrypt = function(input, output) {
-  var i;
-
-  // get next block
-  for(i = 0; i < this._blocks; ++i) {
-    this._inBlock[i] = input.getInt32();
-  }
-
-  // decrypt block
-  this.cipher.decrypt(this._inBlock, this._outBlock);
-
-  // write output
-  for(i = 0; i < this._blocks; ++i) {
-    output.putInt32(this._outBlock[i]);
-  }
-};
-
-(function() {
-  var name = "AES",
-      mode = modeRaw,
-      factory;
-  factory = function() { return new forge.aes.Algorithm(name, mode); };
-  forge.cipher.registerAlgorithm(name, factory);
-})();
-
-// Prevent nextTick from being used when possible
-if ("function" === typeof setImmediate) {
-  forge.util.setImmediate = forge.util.nextTick = function(callback) {
-    setImmediate(callback);
-  };
-}
-
-module.exports = forge;
-
-},{"node-forge/js/aes":46,"node-forge/js/aesCipherSuites":47,"node-forge/js/asn1":48,"node-forge/js/cipher":49,"node-forge/js/cipherModes":50,"node-forge/js/hmac":52,"node-forge/js/jsbn":53,"node-forge/js/md":54,"node-forge/js/mgf":56,"node-forge/js/pem":60,"node-forge/js/pkcs1":61,"node-forge/js/pkcs5":62,"node-forge/js/pkcs7":63,"node-forge/js/prime":66,"node-forge/js/prng":67,"node-forge/js/pss":68,"node-forge/js/random":69,"node-forge/js/sha1":71,"node-forge/js/sha256":72,"node-forge/js/sha512":73,"node-forge/js/util":75,"node-forge/js/x509":76}],104:[function(require,module,exports){
-/*!
- * index.js - Main Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-if (typeof Promise === "undefined") {
-  require("es6-promise").polyfill();
-}
-
-module.exports = {
-  JWA: require("./algorithms"),
-  JWE: require("./jwe"),
-  JWK: require("./jwk"),
-  JWS: require("./jws"),
-  util: require("./util"),
-  parse: require("./parse")
-};
-
-},{"./algorithms":89,"./jwe":109,"./jwk":114,"./jws":120,"./parse":124,"./util":128,"es6-promise":1}],105:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwe/decrypt.js - Decrypt from a JWE
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var assign = require("lodash.assign"),
-    base64url = require("../util/base64url"),
-    JWK = require("../jwk"),
-    zlib = require("zlib");
-
-/**
- * @class JWE.Decrypter
- * @classdesc Processor of encrypted data.
- *
- * @description
- * **NOTE:** This class cannot be instantiated directly. Instead
- * call {@link JWE.createDecrypt}.
- */
-function JWEDecrypter(ks) {
-  var assumedKey,
-    keystore;
-
-  if (JWK.isKey(ks)) {
-    assumedKey = ks;
-    keystore = assumedKey.keystore;
-  } else if (JWK.isKeyStore(ks)) {
-    keystore = ks;
-  } else {
-    throw new TypeError("Keystore must be provided");
-  }
-
-  Object.defineProperty(this, "decrypt", {
-    value: function(input) {
-      /* eslint camelcase: [0] */
-      if (typeof input === "string") {
-        input = input.split(".");
-        input = {
-          protected: input[0],
-          recipients: [
-            {
-              encrypted_key: input[1]
-            }
-          ],
-          iv: input[2],
-          ciphertext: input[3],
-          tag: input[4]
-        };
-      } else if (!input || typeof input !== "object") {
-        throw new Error("invalid input");
-      }
-      if ("encrypted_key" in input) {
-        input.recipients = [
-          {
-            encrypted_key: input.encrypted_key
-          }
-        ];
-      }
-
-      // ensure recipients exists
-      var rcptList = input.recipients || [{}];
-
-      //combine fields
-      var fields;
-      fields = input.protected ?
-           JSON.parse(base64url.decode(input.protected, "binary")) :
-           {};
-      fields = assign(input.unprotected || {}, fields);
-      rcptList = rcptList.map(function(r) {
-        var promise = Promise.resolve();
-        var header = r.header || {};
-        header = assign(header, fields);
-        r.header = header;
-        if (header.epk) {
-          promise = promise.then(function() {
-            return JWK.asKey(header.epk);
-          });
-          promise = promise.then(function(epk) {
-            header.epk = epk.toObject(false);
-          });
-        }
-        return promise.then(function() {
-          return r;
-        });
-      });
-
-      var promise = Promise.all(rcptList);
-
-      // decrypt with first key found
-      var algKey,
-        encKey,
-        kdata;
-      promise = promise.then(function(rcptList) {
-        var jwe = {};
-        return new Promise(function(resolve, reject) {
-          var processKey = function() {
-            var rcpt = rcptList.shift();
-            if (!rcpt) {
-              reject(new Error("no key found"));
-              return;
-            }
-
-            var algPromise;
-
-            var prekey = kdata = rcpt.encrypted_key || "";
-            prekey = base64url.decode(prekey);
-            algKey = assumedKey || keystore.get({
-              use: "enc",
-              alg: rcpt.header.alg,
-              kid: rcpt.header.kid
-            });
-            if (algKey) {
-              algPromise = algKey.unwrap(rcpt.header.alg, prekey, rcpt.header);
-            } else {
-              algPromise = Promise.reject();
-            }
-            algPromise.then(function(key) {
-              encKey = {
-                "kty": "oct",
-                "k": base64url.encode(key)
-              };
-              encKey = JWK.asKey(encKey);
-              jwe.key = algKey;
-              jwe.header = rcpt.header;
-              resolve(jwe);
-            }, processKey);
-          };
-          processKey();
-        });
-      });
-
-      // prepare decipher inputs
-      promise = promise.then(function(jwe) {
-        jwe.iv = input.iv;
-        jwe.tag = input.tag;
-        jwe.ciphertext = base64url.decode(input.ciphertext);
-
-        return jwe;
-      });
-
-      // decrypt it!
-      promise = promise.then(function(jwe) {
-        var adata = input.protected;
-        if ("aad" in input && null != input.aad) {
-          adata += "." + input.aad;
-        }
-
-        var params = {
-          iv: jwe.iv,
-          adata: adata,
-          tag: jwe.tag,
-          kdata: kdata,
-          epu: jwe.epu,
-          epv: jwe.epv
-        };
-        var cdata = jwe.ciphertext;
-
-        delete jwe.iv;
-        delete jwe.tag;
-        delete jwe.ciphertext;
-
-        return encKey.
-          then(function(enkKey) {
-            return enkKey.decrypt(jwe.header.enc, cdata, params).
-              then(function(pdata) {
-                jwe.payload = jwe.plaintext = pdata;
-                return jwe;
-              });
-          });
-      });
-
-      // (OPTIONAL) decompress plaintext
-      if (fields.zip === "DEF") {
-        promise = promise.then(function(jwe) {
-          return new Promise(function(resolve, reject) {
-            zlib.inflateRaw(new Buffer(jwe.plaintext), function(err, data) {
-              if (err) {
-                reject(err);
-              }
-              else {
-                jwe.payload = jwe.plaintext = data;
-                resolve(jwe);
-              }
-            });
-          });
-        });
-      }
-
-      return promise;
-    }
-  });
-}
-
-/**
- * @description
- * Creates a new Decrypter for the given Key or KeyStore.
- *
- * @param {JWK.Key|JWK.KeyStore} ks The Key or KeyStore to use for decryption.
- * @returns {JWE.Decrypter} The new Decrypter.
- */
-function createDecrypt(ks) {
-  var dec = new JWEDecrypter(ks);
-  return dec;
-}
-
-module.exports = {
-  decrypter: JWEDecrypter,
-  createDecrypt: createDecrypt
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../jwk":114,"../util/base64url":126,"buffer":140,"lodash.assign":26,"zlib":139}],106:[function(require,module,exports){
-/*!
- * jwe/defaults.js - Defaults for JWEs
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-/**
- * @description
- * The default options for {@link JWE.createEncrypt}.
- *
- * @property {Boolean|String} zip Determines the compression algorithm to
- *           apply to the plaintext (if any) before it is encrypted. This can
- *           also be `true` (which is equivalent to `"DEF"`) or **`false`**
- *           (the default, which is equivalent to no compression).
- * @property {String} format Determines the serialization format of the
- *           output.  Expected to be `"general"` for general JSON
- *           Serialization, `"flattened"` for flattened JSON Serialization,
- *           or `"compact"` for Compact Serialization (default is
- *           **`"general"`**).
- * @property {Boolean} compact Determines if the output is the Compact
- *           serialization (`true`) or the JSON serialization (**`false`**,
- *           the default).
- * @property {String} contentAlg The algorithm used to encrypt the plaintext
- *           (default is **`"A128CBC-HS256"`**).
- * @property {String|String[]} protect The names of the headers to integrity
- *           protect.  The value `""` means that none of header parameters
- *           are integrity protected, while `"*"` (the default) means that all
- *           headers parameter sare integrity protected.
- */
-var JWEDefaults = {
-  zip: false,
-  format: "general",
-  contentAlg: "A128CBC-HS256",
-  protect: "*"
-};
-
-module.exports = JWEDefaults;
-
-},{}],107:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwe/encrypt.js - Encrypt to a JWE
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var assign = require("lodash.assign"),
-    clone = require("lodash.clone"),
-    util = require("../util"),
-    generateCEK = require("./helpers").generateCEK,
-    JWK = require("../jwk"),
-    slice = require("./helpers").slice,
-    zlib = require("zlib"),
-    CONSTANTS = require("../algorithms/constants");
-
-var DEFAULTS = require("./defaults");
-
-/**
- * @class JWE.Encrypter
- * @classdesc
- * Generator of encrypted data.
- *
- * @description
- * **NOTE:** This class cannot be instantiated directly. Instead call {@link
- * JWE.createEncrypt}.
- */
-function JWEEncrypter(cfg, fields, recipients) {
-  var finalized = false,
-    format = cfg.format || "general",
-    protectAll = !!cfg.protectAll,
-    content = new Buffer(0);
-
-  /**
-   * @member {String} JWE.Encrypter#zip
-   * @readonly
-   * @description
-   * Indicates the compression algorithm applied to the plaintext
-   * before it is encrypted.  The possible values are:
-   *
-   * + **`"DEF"`**: Compress the plaintext using the DEFLATE algorithm.
-   * + **`""`**: Do not compress the plaintext.
-   */
-  Object.defineProperty(this, "zip", {
-    get: function() {
-      return fields.zip || "";
-    },
-    enumerable: true
-  });
-  /**
-   * @member {Boolean} JWE.Encrypter#compact
-   * @readonly
-   * @description
-   * Indicates whether the output of this encryption generator is
-   * using the Compact serialization (`true`) or the JSON
-   * serialization (`false`).
-   */
-  Object.defineProperty(this, "compact", {
-    get: function() { return "compact" === format; },
-    enumerable: true
-  });
-  /**
-   * @member {String} JWE.Encrypter#format
-   * @readonly
-   * @description
-   * Indicates the format the output of this encryption generator takes.
-   */
-  Object.defineProperty(this, "format", {
-    get: function() { return format; },
-    enumerable: true
-  });
-  /**
-   * @member {String[]} JWE.Encrypter#protected
-   * @readonly
-   * @description
-   * The header parameter names that are protected. Protected header fields
-   * are first serialized to UTF-8 then encoded as util.base64url, then used as
-   * the additional authenticated data in the encryption operation.
-   */
-  Object.defineProperty(this, "protected", {
-    get: function() {
-      return clone(cfg.protect);
-    },
-    enumerable: true
-  });
-  /**
-   * @member {Object} JWE.Encrypter#header
-   * @readonly
-   * @description
-   * The global header parameters, both protected and unprotected. Call
-   * {@link JWE.Encrypter#protected} to determine which parameters will
-   * be protected.
-   */
-  Object.defineProperty(this, "header", {
-    get: function() {
-      return clone(fields);
-    },
-    enumerable: true
-  });
-
-  /**
-   * @method JWE.Encrypter#update
-   * @description
-   * Updates the plaintext data for the encryption generator. The plaintext
-   * is appended to the end of any other plaintext already applied.
-   *
-   * If {data} is a Buffer, {encoding} is ignored. Otherwise, {data} is
-   * converted to a Buffer internally to {encoding}.
-   *
-   * @param {Buffer|String} [data] The plaintext to apply.
-   * @param {String} [encoding] The encoding of the plaintext.
-   * @returns {JWE.Encrypter} This encryption generator.
-   * @throws {Error} If ciphertext has already been generated.
-   */
-  Object.defineProperty(this, "update", {
-    value: function(data, encoding) {
-      if (finalized) {
-        throw new Error("already final");
-      }
-      if (data != null) {
-        data = util.asBuffer(data, encoding);
-        if (content.length) {
-          content = Buffer.concat([content, data],
-                      content.length + data.length);
-        } else {
-          content = data;
-        }
-      }
-
-      return this;
-    }
-  });
-  /**
-   * @method JWE.Encrypter#final
-   * @description
-   * Finishes the encryption operation.
-   *
-   * The returned Promise, when fulfilled, is the JSON Web Encryption (JWE)
-   * object, either in the Compact (if {@link JWE.Encrypter#compact} is
-   * `true`) or the JSON serialization.
-   *
-   * @param {Buffer|String} [data] The final plaintext data to apply.
-   * @param {String} [encoding] The encoding of the final plaintext data
-   *        (if any).
-   * @returns {Promise} A promise for the encryption operation.
-   * @throws {Error} If ciphertext has already been generated.
-   */
-  Object.defineProperty(this, "final", {
-    value: function(data, encoding) {
-      if (finalized) {
-        throw new Error("already final");
-      }
-
-      // last-minute data
-      this.update(data, encoding);
-
-      // mark as done...ish
-      finalized = true;
-      var promise = Promise.resolve({});
-
-      // determine CEK and IV
-      var encAlg = fields.enc;
-      var encKey;
-      promise = promise.then(function(jwe) {
-        if (cfg.cek) {
-          encKey = JWK.asKey(cfg.cek);
-        }
-        return jwe;
-      });
-
-      // process recipients
-      promise = promise.then(function(jwe) {
-        var procR = function(r, one) {
-          var props = {};
-          props = assign(props, fields);
-          props = assign(props, r.header);
-
-          var algKey = r.key,
-              algAlg = props.alg;
-
-          // generate Ephemeral EC Key
-          var tks,
-              rpromise;
-          if (props.alg.indexOf("ECDH-ES") === 0) {
-            tks = algKey.keystore.temp();
-            if (r.epk) {
-              rpromise = Promise.resolve(r.epk).
-                then(function(epk) {
-                  r.header.epk = epk.toJSON(false, ["kid"]);
-                  props.epk = epk.toObject(true, ["kid"]);
-                });
-            } else {
-              rpromise = tks.generate("EC", algKey.get("crv")).
-                then(function(epk) {
-                  r.header.epk = epk.toJSON(false, ["kid"]);
-                  props.epk = epk.toObject(true, ["kid"]);
-                });
-            }
-          } else {
-            rpromise = Promise.resolve();
-          }
-
-          // encrypt the CEK
-          rpromise = rpromise.then(function() {
-            var cek,
-                p;
-            // special case 'alg=dir'
-            if ("dir" === algAlg && one) {
-              encKey = Promise.resolve(algKey);
-              p = encKey.then(function(jwk) {
-                // fixup encAlg
-                if (!encAlg) {
-                  props.enc = fields.enc = encAlg = jwk.algorithms(JWK.MODE_ENCRYPT)[0];
-                }
-                return {
-                  once: true,
-                  direct: true
-                };
-              });
-            } else {
-              if (!encKey) {
-                if (!encAlg) {
-                  props.enc = fields.enc = encAlg = cfg.contentAlg;
-                }
-                encKey = generateCEK(encAlg);
-              }
-              p = encKey.then(function(jwk) {
-                cek = jwk.get("k", true);
-                // algKey may or may not be a promise
-                return algKey;
-              });
-              p = p.then(function(algKey) {
-                return algKey.wrap(algAlg, cek, props);
-              });
-            }
-            return p;
-          });
-          rpromise = rpromise.then(function(wrapped) {
-            if (wrapped.once && !one) {
-              return Promise.reject(new Error("cannot use 'alg':'" + algAlg + "' with multiple recipients"));
-            }
-
-            var rjwe = {},
-                cek;
-            if (wrapped.data) {
-              cek = wrapped.data;
-              cek = util.base64url.encode(cek);
-            }
-
-            if (wrapped.direct && cek) {
-              // replace content key
-              encKey = JWK.asKey({
-                kty: "oct",
-                k: cek
-              });
-            } else if (cek) {
-              /* eslint camelcase: [0] */
-              rjwe.encrypted_key = cek;
-            }
-
-            if (r.header && Object.keys(r.header).length) {
-              rjwe.header = clone(r.header || {});
-            }
-            if (wrapped.header) {
-              rjwe.header = assign(rjwe.header || {},
-                                     wrapped.header);
-            }
-
-            return rjwe;
-           });
-           return rpromise;
-        };
-
-        var p = Promise.all(recipients);
-        p = p.then(function(rcpts) {
-          var single = (1 === rcpts.length);
-          rcpts = rcpts.map(function(r) {
-            return procR(r, single);
-          });
-          return Promise.all(rcpts);
-        });
-        p = p.then(function(rcpts) {
-          jwe.recipients = rcpts.filter(function(r) { return !!r; });
-          return jwe;
-        });
-        return p;
-      });
-
-      // normalize headers
-      var props = {};
-      promise = promise.then(function(jwe) {
-        var protect,
-          lenProtect,
-          unprotect,
-          lenUnprotect;
-
-        unprotect = clone(fields);
-        if ((protectAll && jwe.recipients.length === 1) || "compact" === format) {
-          // merge single recipient into fields
-          protect = assign(jwe.recipients[0].header || {},
-                     unprotect);
-          lenProtect = Object.keys(protect).length;
-
-          unprotect = undefined;
-          lenUnprotect = 0;
-
-          delete jwe.recipients[0].header;
-          if (Object.keys(jwe.recipients[0]).length === 0) {
-            jwe.recipients.splice(0, 1);
-          }
-        } else {
-          protect = {};
-          lenProtect = 0;
-          lenUnprotect = Object.keys(unprotect).length;
-          cfg.protect.forEach(function(f) {
-            if (!(f in unprotect)) {
-              return;
-            }
-            protect[f] = unprotect[f];
-            lenProtect++;
-
-            delete unprotect[f];
-            lenUnprotect--;
-          });
-        }
-
-        if (!jwe.recipients || jwe.recipients.length === 0) {
-          delete jwe.recipients;
-        }
-
-        // "serialize" (and setup merged props)
-        if (unprotect && lenUnprotect > 0) {
-          props = assign(props, unprotect);
-          jwe.unprotected = unprotect;
-        }
-        if (protect && lenProtect > 0) {
-          props = assign(props, protect);
-          protect = JSON.stringify(protect);
-          jwe.protected = util.base64url.encode(protect, "utf8");
-        }
-
-        return jwe;
-      });
-
-      // (OPTIONAL) compress plaintext
-      promise = promise.then(function(jwe) {
-        var pdata = content;
-        if (!props.zip) {
-          jwe.plaintext = pdata;
-          return jwe;
-        } else if (props.zip === "DEF") {
-          return new Promise(function(resolve, reject) {
-            zlib.deflateRaw(new Buffer(pdata, "binary"), function(err, data) {
-              if (err) {
-                reject(err);
-              }
-              else {
-                jwe.plaintext = data;
-                resolve(jwe);
-              }
-            });
-          });
-        }
-        return Promise.reject(new Error("unsupported 'zip' mode"));
-      });
-
-      // encrypt plaintext
-      promise = promise.then(function(jwe) {
-        props.adata = jwe.protected;
-        if ("aad" in cfg && cfg.aad != null) {
-          props.adata += "." + cfg.aad;
-          props.adata = new Buffer(props.adata, "utf8");
-        }
-        // calculate IV
-        var iv = cfg.iv ||
-                 util.randomBytes(CONSTANTS.NONCELENGTH[encAlg] / 8);
-        if ("string" === typeof iv) {
-          iv = util.base64url.decode(iv);
-        }
-        props.iv = iv;
-
-        if ("recipients" in jwe && jwe.recipients.length === 1) {
-          props.kdata = jwe.recipients[0].encrypted_key;
-        }
-
-        if ("epu" in cfg && cfg.epu != null) {
-          props.epu = cfg.epu;
-        }
-
-        if ("epv" in cfg && cfg.epv != null) {
-          props.epv = cfg.epv;
-        }
-
-        var pdata = jwe.plaintext;
-        delete jwe.plaintext;
-        return encKey.then(function(encKey) {
-          var p = encKey.encrypt(encAlg, pdata, props);
-          p = p.then(function(result) {
-            jwe.iv = util.base64url.encode(iv, "binary");
-            if ("aad" in cfg && cfg.aad != null) {
-             jwe.aad = cfg.aad;
-            }
-            jwe.ciphertext = util.base64url.encode(result.data, "binary");
-            jwe.tag = util.base64url.encode(result.tag, "binary");
-            return jwe;
-          });
-          return p;
-        });
-      });
-
-      // (OPTIONAL) compact/flattened results
-      switch (format) {
-        case "compact":
-          promise = promise.then(function(jwe) {
-            var compact = new Array(5);
-
-            compact[0] = jwe.protected;
-            if (jwe.recipients && jwe.recipients[0]) {
-              compact[1] = jwe.recipients[0].encrypted_key;
-            }
-
-            compact[2] = jwe.iv;
-            compact[3] = jwe.ciphertext;
-            compact[4] = jwe.tag;
-            compact = compact.join(".");
-
-            return compact;
-          });
-          break;
-        case "flattened":
-          promise = promise.then(function(jwe) {
-            var flattened = {},
-                rcpt = jwe.recipients && jwe.recipients[0];
-
-            if (jwe.protected) {
-              flattened.protected = jwe.protected;
-            }
-            if (jwe.unprotected) {
-              flattened.unprotected = jwe.unprotected;
-            }
-            ["header", "encrypted_key"].forEach(function(f) {
-              if (!rcpt) { return; }
-              if (!(f in rcpt)) { return; }
-              flattened[f] = rcpt[f];
-            });
-            if (jwe.aad) {
-              flattened.aad = jwe.aad;
-            }
-            flattened.iv = jwe.iv;
-            flattened.ciphertext = jwe.ciphertext;
-            flattened.tag = jwe.tag;
-
-            return flattened;
-          });
-          break;
-      }
-
-      return promise;
-    }
-  });
-}
-
-function createEncrypt(opts, rcpts) {
-  // fixup recipients
-  var options = opts,
-    rcptStart = 1,
-    rcptList = rcpts;
-
-  if (arguments.length === 0) {
-    throw new Error("at least one recipient must be provided");
-  }
-  if (arguments.length === 1) {
-    // assume opts is the recipient list
-    rcptList = opts;
-    rcptStart = 0;
-    options = {};
-  } else if (JWK.isKey(opts) ||
-        (opts && "kty" in opts) ||
-        (opts && "key" in opts &&
-        (JWK.isKey(opts.key) || "kty" in opts.key))) {
-    rcptList = opts;
-    rcptStart = 0;
-    options = {};
-  } else {
-    options = clone(opts);
-  }
-  if (!Array.isArray(rcptList)) {
-    rcptList = slice(arguments, rcptStart);
-  }
-
-  // fixup options
-  options = assign(clone(DEFAULTS), options);
-
-  // setup header fields
-  var fields = clone(options.fields || {});
-  if (options.zip) {
-    fields.zip = (typeof options.zip === "boolean") ?
-           (options.zip ? "DEF" : false) :
-           options.zip;
-  }
-  options.format = (options.compact ? "compact" : options.format) || "general";
-  switch (options.format) {
-    case "compact":
-      if ("aad" in opts) {
-        throw new Error("additional authenticated data cannot be used for compact serialization");
-      }
-      /* eslint no-fallthrough: [0] */
-    case "flattened":
-      if (rcptList.length > 1) {
-        throw new Error("too many recipients for compact serialization");
-      }
-      break;
-  }
-
-  // note protected fields (globally)
-  // protected fields are global only
-  var protectAll = false;
-  if ("compact" === options.format || "*" === options.protect) {
-    protectAll = true;
-    options.protect = Object.keys(fields).concat("enc");
-  } else if (typeof options.protect === "string") {
-    options.protect = [options.protect];
-  } else if (Array.isArray(options.protect)) {
-    options.protect = options.protect.concat();
-  } else if (!options.protect) {
-    options.protect = [];
-  } else {
-    throw new Error("protect must be a list of fields");
-  }
-
-  if (protectAll && 1 < rcptList.length) {
-    throw new Error("too many recipients to protect all header parameters");
-  }
-
-  rcptList = rcptList.map(function(r, idx) {
-    var p;
-
-    // resolve a key
-    if (r && "kty" in r) {
-      p = JWK.asKey(r);
-      p = p.then(function(k) {
-        return {
-          key: k
-        };
-      });
-    } else if (r) {
-      p = JWK.asKey(r.key);
-      p = p.then(function(k) {
-        return {
-          header: r.header,
-          reference: r.reference,
-          key: k
-        };
-      });
-    } else {
-      p = Promise.reject(new Error("missing key for recipient " + idx));
-    }
-
-    // convert ephemeral key (if present)
-    if (r.epk) {
-      p = p.then(function(recipient) {
-        return JWK.asKey(r.epk).
-          then(function(epk) {
-            recipient.epk = epk;
-            return recipient;
-          });
-      });
-    }
-
-    // resolve the complete recipient
-    p = p.then(function(recipient) {
-      var key = recipient.key;
-
-      // prepare the recipient header
-      var header = recipient.header || {};
-      recipient.header = header;
-      var props = {};
-      props = assign(props, fields);
-      props = assign(props, recipient.header);
-
-      // ensure key protection algorithm is set
-      if (!props.alg) {
-        props.alg = key.algorithms(JWK.MODE_WRAP)[0];
-      }
-      header.alg = props.alg;
-
-      // determine the key reference
-      var ref = recipient.reference;
-      delete recipient.reference;
-      if (undefined === ref) {
-        // header already contains the key reference
-        ref = ["kid", "jku", "x5c", "x5t", "x5u"].some(function(k) {
-          return (k in header);
-        });
-        ref = !ref ? "kid" : null;
-      } else if ("boolean" === typeof ref) {
-        // explicit (positive | negative) request for key reference
-        ref = ref ? "kid" : null;
-      }
-      var jwk;
-      if (ref) {
-        jwk = key.toJSON();
-        if ("jwk" === ref) {
-          header.jwk = jwk;
-        } else if (ref in jwk) {
-          header[ref] = jwk[ref];
-        }
-      }
-
-      // freeze recipient
-      recipient = Object.freeze(recipient);
-      return recipient;
-    });
-
-    return p;
-  });
-
-  // create and configure encryption
-  var cfg = {
-    aad: ("aad" in options) ? util.base64url.encode(options.aad || "") : null,
-    contentAlg: options.contentAlg,
-    format: options.format,
-    protect: options.protect,
-    cek: options.cek,
-    iv: options.iv,
-    protectAll: protectAll
-  };
-  var enc = new JWEEncrypter(cfg, fields, rcptList);
-
-  return enc;
-}
-
-module.exports = {
-  encrypter: JWEEncrypter,
-  createEncrypt: createEncrypt
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../algorithms/constants":81,"../jwk":114,"../util":128,"./defaults":106,"./helpers":108,"buffer":140,"lodash.assign":26,"lodash.clone":27,"zlib":139}],108:[function(require,module,exports){
-/*!
- * jwe/helpers.js - JWE Internal Helper Functions
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var CONSTANTS = require("../algorithms/constants"),
-    JWK = require("../jwk");
-
-module.exports = {
-  slice: function(input, start) {
-    return Array.prototype.slice.call(input, start || 0);
-  },
-  generateCEK: function(enc) {
-    var ks = JWK.createKeyStore();
-    var len = CONSTANTS.KEYLENGTH[enc];
-
-    if (len) {
-        return ks.generate("oct", len);
-    }
-
-    throw new Error("unsupported encryption algorithm");
-  }
-};
-
-},{"../algorithms/constants":81,"../jwk":114}],109:[function(require,module,exports){
-/*!
- * jwe/index.js - JSON Web Encryption (JWE) Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var JWE = {
-  createEncrypt: require("./encrypt").createEncrypt,
-  createDecrypt: require("./decrypt").createDecrypt
-};
-
-module.exports = JWE;
-
-},{"./decrypt":105,"./encrypt":107}],110:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwk/basekey.js - JWK Key Base Class Implementation
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var assign = require("lodash.assign"),
-    clone = require("lodash.clone"),
-    flatten = require("lodash.flatten"),
-    intersection = require("lodash.intersection"),
-    merge = require("../util/merge"),
-    omit = require("lodash.omit"),
-    pick = require("lodash.pick"),
-    uniq = require("lodash.uniq"),
-    uuid = require("uuid");
-
-var ALGORITHMS = require("../algorithms"),
-    CONSTANTS = require("./constants.js"),
-    HELPERS = require("./helpers.js"),
-    UTIL = require("../util");
-
-/**
- * @class JWK.Key
- * @classdesc
- * Represents a JSON Web Key instance.
- *
- * @description
- * **NOTE:** This class cannot be instantiated directly. Instead call
- * {@link JWK.asKey}, {@link JWK.KeyStore#add}, or
- * {@link JWK.KeyStore#generate}.
- */
-var JWKBaseKeyObject = function(kty, ks, props, cfg) {
-  // ### validate/coerce arguments ###
-  if (!kty) {
-    throw new Error("kty cannot be null");
-  }
-
-  if (!ks) {
-    throw new Error("keystore cannot be null");
-  }
-
-  if (!props) {
-    throw new Error("props cannot be null");
-  } else if ("string" === typeof props) {
-    props = JSON.parse(props);
-  }
-
-  if (!cfg) {
-    throw new Error("cfg cannot be null");
-  }
-
-  var excluded = [];
-  var keys = {},
-      json = {},
-      prints,
-      kid;
-
-  props = clone(props);
-  // strip thumbprints if present
-  prints = assign({}, props[HELPERS.INTERNALS.THUMBPRINT_KEY] || {});
-  delete props[HELPERS.INTERNALS.THUMBPRINT_KEY];
-  Object.keys(prints).forEach(function(a) {
-    var h = prints[a];
-    if (!kid) {
-      kid = h;
-      if (Buffer.isBuffer(kid)) {
-        kid = UTIL.base64url.encode(kid);
-      }
-    }
-    if (!Buffer.isBuffer(h)) {
-      h = UTIL.base64url.decode(h);
-      prints[a] = h;
-    }
-  });
-
-  // force certain values
-  props.kty = kty;
-  props.kid = props.kid || kid || uuid();
-
-  // setup base info
-  var included = Object.keys(HELPERS.COMMON_PROPS).map(function(p) {
-    return HELPERS.COMMON_PROPS[p].name;
-  });
-  json.base = pick(props, included);
-  excluded = excluded.concat(Object.keys(json.base));
-
-  // setup public information
-  json.public = clone(props);
-  keys.public = cfg.publicKey(json.public);
-  if (keys.public) {
-    // exclude public values from extra
-    excluded = excluded.concat(Object.keys(json.public));
-  }
-
-  // setup private information
-  json.private = clone(props);
-  keys.private = cfg.privateKey(json.private);
-  if (keys.private) {
-    // exclude private values from extra
-    excluded = excluded.concat(Object.keys(json.private));
-  }
-
-  // setup extra information
-  json.extra = omit(props, excluded);
-
-  // TODO: validate 'alg' against supported algorithms
-
-  // setup calculated values
-  var keyLen;
-  if (keys.public && ("length" in keys.public)) {
-    keyLen = keys.public.length;
-  } else if (keys.private && ("length" in keys.private)) {
-    keyLen = keys.private.length;
-  } else {
-    keyLen = NaN;
-  }
-
-  // ### Public Properties ###
-  /**
-   * @member {JWK.KeyStore} JWK.Key#keystore
-   * @description
-   * The owning keystore.
-   */
-  Object.defineProperty(this, "keystore", {
-    value: ks,
-    enumerable: true
-  });
-  /**
-   * @member {Number} JWK.Key#length
-   * @description
-   * The size of this Key, in bits.
-   */
-  Object.defineProperty(this, "length", {
-    value: keyLen,
-    enumerable: true
-  });
-  /**
-   * @member {String} JWK.Key#kty
-   * @description
-   * The type of Key.
-   */
-  Object.defineProperty(this, "kty", {
-    value: kty,
-    enumerable: true
-  });
-
-  /**
-   * @member {String} JWK.Key#kid
-   * @description
-   * The identifier for this Key.
-   */
-  Object.defineProperty(this, "kid", {
-    value: json.base.kid,
-    enumerable: true
-  });
-  /**
-   * @member {String} JWK.Key#use
-   * @description
-   * The usage for this Key.
-   */
-  Object.defineProperty(this, "use", {
-    value: json.base.use || "",
-    enumerable: true
-  });
-  /**
-   * @member {String} JWK.Key#alg
-   * @description
-   * The sole algorithm this key can be used for.
-   */
-  Object.defineProperty(this, "alg", {
-    value: json.base.alg || "",
-    enumerable: true
-  });
-
-  // ### Public Methods ###
-  /**
-   * Generates the thumbprint of this Key.
-   *
-   * @param {String} [] The hash algorithm to use
-   * @returns {Promise} The promise for the thumbprint generation.
-   */
-  Object.defineProperty(this, "thumbprint", {
-    value: function(hash) {
-      hash = (hash || HELPERS.INTERNALS.THUMBPRINT_HASH).toUpperCase();
-      if (prints[hash]) {
-        // return cached value
-        return Promise.resolve(prints[hash]);
-      }
-      var p = HELPERS.thumbprint(cfg, json, hash);
-      p = p.then(function(result) {
-        if (result) {
-          prints[hash] = result;
-        }
-        return result;
-      });
-      return p;
-    }
-  });
-  /**
-   * @method JWK.Key#algorithms
-   * @description
-   * The possible algorithms this Key can be used for. The returned
-   * list is not any particular order, but is filtered based on the
-   * Key's intended usage.
-   *
-   * @param {String} mode The operation mode
-   * @returns {String[]} The list of supported algorithms
-   * @see JWK.Key#supports
-   */
-  Object.defineProperty(this, "algorithms", {
-    value: function(mode) {
-      var modes = [];
-      if (!this.use || this.use === "sig") {
-        if (!mode || CONSTANTS.MODE_SIGN === mode) {
-          modes.push(CONSTANTS.MODE_SIGN);
-        }
-        if (!mode || CONSTANTS.MODE_VERIFY === mode) {
-          modes.push(CONSTANTS.MODE_VERIFY);
-        }
-      }
-      if (!this.use || this.use === "enc") {
-        if (!mode || CONSTANTS.MODE_ENCRYPT === mode) {
-          modes.push(CONSTANTS.MODE_ENCRYPT);
-        }
-        if (!mode || CONSTANTS.MODE_DECRYPT === mode) {
-          modes.push(CONSTANTS.MODE_DECRYPT);
-        }
-        if (!mode || CONSTANTS.MODE_WRAP === mode) {
-          modes.push(CONSTANTS.MODE_WRAP);
-        }
-        if (!mode || CONSTANTS.MODE_UNWRAP === mode) {
-          modes.push(CONSTANTS.MODE_UNWRAP);
-        }
-      }
-
-      var self = this;
-      var algs = modes.map(function(m) {
-        return cfg.algorithms.call(self, keys, m);
-      });
-      algs = flatten(algs);
-      algs = uniq(algs);
-      if (this.alg) {
-        // TODO: fix this correctly
-        var valid;
-        if ("oct" === kty) {
-          valid = [this.alg, "dir"];
-        } else {
-          valid = [this.alg];
-        }
-        algs = intersection(algs, valid);
-      }
-
-      return algs;
-    }
-  });
-  /**
-   * @method JWK.Key#supports
-   * @description
-   * Determines if the given algorithm is supported.
-   *
-   * @param {String} alg The algorithm in question
-   * @param {String} [mode] The operation mode
-   * @returns {Boolean} `true` if {alg} is supported, and `false` otherwise.
-   * @see JWK.Key#algorithms
-   */
-  Object.defineProperty(this, "supports", {
-    value: function(alg, mode) {
-      return (this.algorithms(mode).indexOf(alg) !== -1);
-    }
-  });
-  /**
-   * @method JWK.Key#has
-   * @description
-   * Determines if this Key contains the given parameter.
-   *
-   * @param {String} name The name of the parameter
-   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
-   *        checked.
-   * @returns {Boolean} `true` if the given parameter is present; `false`
-   *          otherwise.
-   */
-  Object.defineProperty(this, "has", {
-    value: function(name, isPrivate) {
-      var contains = false;
-      contains = contains || !!(json.base &&
-                                (name in json.base));
-      contains = contains || !!(keys.public &&
-                                (name in keys.public));
-      contains = contains || !!(json.extra &&
-                                (name in json.extra));
-      contains = contains || !!(isPrivate &&
-                                keys.private &&
-                                (name in keys.private));
-      // TODO: check for export restrictions
-
-      return contains;
-    }
-  });
-  /**
-   * @method JWK.Key#get
-   * @description
-   * Retrieves the value of the given parameter. The value returned by this
-   * method is in its natural format, which might not exactly match its
-   * JSON encoding (e.g., a binary string rather than a base64url-encoded
-   * string).
-   *
-   * **NOTE:** This method can return `false`. Call
-   * {@link JWK.Key#has} to determine if the parameter is present.
-   *
-   * @param {String} name The name of the parameter
-   * @param {Boolean} [isPrivate=false] `true` if private parameters should
-   *        be checked.
-   * @returns {any} The value of the named parameter, or undefined if
-   *          it is not present.
-   */
-  Object.defineProperty(this, "get", {
-    value: function(name, isPrivate) {
-      var src;
-      if (json.base && (name in json.base)) {
-        src = json.base;
-      } else if (keys.public && (name in keys.public)) {
-        src = keys.public;
-      } else if (json.extra && (name in json.extra)) {
-        src = json.extra;
-      } else if (isPrivate && keys.private && (name in keys.private)) {
-        // TODO: check for export restrictions
-        src = keys.private;
-      }
-
-      return src && src[name] || null;
-    }
-  });
-  /**
-   * @method JWK.Key#toJSON
-   * @description
-   * Returns the JSON representation of this Key.  All properties of the
-   * returned JSON object are properly encoded (e.g., base64url encoding for
-   * any binary strings).
-   *
-   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
-   *        included.
-   * @param {String[]} [excluded] The list of parameters to exclude from
-   *        the returned JSON.
-   * @returns {Object} The plain JSON object
-   */
-  Object.defineProperty(this, "toJSON", {
-    value: function(isPrivate, excluded) {
-      // coerce arguments
-      if (Array.isArray(isPrivate)) {
-        excluded = isPrivate;
-        isPrivate = false;
-      }
-      var result = {};
-
-      // TODO: check for export restrictions
-      result = merge(result,
-                       json.base,
-                       json.public,
-                       (isPrivate) ? json.private : {},
-                       json.extra);
-      result = omit(result, excluded || []);
-
-      return result;
-    }
-  });
-
-  /**
-   * @method JWK.Key#toPEM
-   * @description
-   * Returns the PEM representation of this Key as a string.
-   *
-   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
-   *        included.
-   * @returns {string} The PEM-encoded string
-   */
-  Object.defineProperty(this, "toPEM", {
-    value: function(isPrivate) {
-      if (isPrivate === null) {
-        isPrivate = false;
-      }
-
-      if (!cfg.convertToPEM) {
-        throw new Error("Unsupported key type for PEM encoding");
-      }
-      var k = (isPrivate) ? keys.private : keys.public;
-      if (!k) {
-        throw new Error("Invalid key");
-      }
-      return cfg.convertToPEM.call(this, k, isPrivate);
-    }
-  });
-
-  /**
-   * @method JWK.Key#toObject
-   * @description
-   * Returns the plain object representing this Key.  All properties of the
-   * returned object are in their natural encoding (e.g., binary strings
-   * instead of base64url encoded).
-   *
-   * @param {Boolean} [isPrivate=false] `true` if private parameters should be
-   *        included.
-   * @param {String[]} [excluded] The list of parameters to exclude from
-   *        the returned object.
-   * @returns {Object} The plain Object.
-   */
-  Object.defineProperty(this, "toObject", {
-    value: function(isPrivate, excluded) {
-      // coerce arguments
-      if (Array.isArray(isPrivate)) {
-        excluded = isPrivate;
-        isPrivate = false;
-      }
-      var result = {};
-
-      // TODO: check for export restrictions
-      result = merge(result,
-                       json.base,
-                       keys.public,
-                       (isPrivate) ? keys.private : {},
-                       json.extra);
-      result = omit(result, (excluded || []).concat("length"));
-
-      return result;
-    }
-  });
-
-  /**
-   * @method JWK.Key#sign
-   * @description
-   * Sign the given data using the specified algorithm.
-   *
-   * **NOTE:** This is the primitive signing operation; the output is
-   * _**NOT**_ a JSON Web Signature (JWS) object.
-   *
-   * The Promise, when fulfilled, returns an Object with the following
-   * properties:
-   *
-   * + **data**: The data that was signed (and should be equal to {data}).
-   * + **mac**: The signature or message authentication code (MAC).
-   *
-   * @param {String} alg The signing algorithm
-   * @param {String|Buffer} data The data to sign
-   * @param {Object} [props] Additional properties for the signing
-   *        algorithm.
-   * @returns {Promise} The promise for the signing operation.
-   * @throws {Error} If {alg} is not appropriate for this Key; or if
-   *         this Key does not contain the appropriate parameters.
-   */
-  Object.defineProperty(this, "sign", {
-    value: function(alg, data, props) {
-      // validate appropriateness
-      if (this.algorithms("sign").indexOf(alg) === -1) {
-        return Promise.reject(new Error("unsupported algorithm"));
-      }
-      var k = cfg.signKey.call(this, alg, keys);
-      if (!k) {
-        return Promise.reject(new Error("improper key"));
-      }
-
-      // prepare properties (if any)
-      props = (props) ?
-              clone(props) :
-              {};
-      if (cfg.signProps) {
-        props = merge(props, cfg.signProps.call(this, alg, props));
-      }
-      return ALGORITHMS.sign(alg, k, data, props);
-    }
-  });
-  /**
-   * @method JWK.Key#verify
-   * @description
-   * Verify the given data and signature using the specified algorithm.
-   *
-   * **NOTE:** This is the primitive verification operation; the input is
-   * _**NOT**_ a JSON Web Signature.</p>
-   *
-   * The Promise, when fulfilled, returns an Object with the following
-   * properties:
-   *
-   * + **data**: The data that was verified (and should be equal to
-   *   {data}).
-   * + **mac**: The signature or MAC that was verified (and should be equal
-   *   to {mac}).
-   * + **valid**: `true` if {mac} is valid for {data}.
-   *
-   * @param {String} alg The verification algorithm
-   * @param {String|Buffer} data The data to verify
-   * @param {String|Buffer} mac The signature or MAC to verify
-   * @param {Object} [props] Additional properties for the verification
-   *        algorithm.
-   * @returns {Promise} The promise for the verification operation.
-   * @throws {Error} If {alg} is not appropriate for this Key; or if
-   *         the Key does not contain the appropriate properties.
-   */
-  Object.defineProperty(this, "verify", {
-    value: function(alg, data, mac, props) {
-      // validate appropriateness
-      if (this.algorithms("verify").indexOf(alg) === -1) {
-        return Promise.reject(new Error("unsupported algorithm"));
-      }
-      var k = cfg.verifyKey.call(this, alg, keys);
-      if (!k) {
-        return Promise.reject(new Error("improper key"));
-      }
-
-      // prepare properties (if any)
-      props = (props) ?
-              clone(props) :
-              {};
-      if (cfg.verifyProps) {
-        props = merge(props, cfg.verifyProps.call(this, alg, props));
-      }
-      return ALGORITHMS.verify(alg, k, data, mac, props);
-    }
-  });
-
-  /**
-   * @method JWK.Key#encrypt
-   * @description
-   * Encrypts the given data using the specified algorithm.
-   *
-   * **NOTE:** This is the primitive encryption operation; the output is
-   * _**NOT**_ a JSON Web Encryption (JWE) object.
-   *
-   * **NOTE:** This operation is treated as distinct from {@link
-   * JWK.Key#wrap}, as different algorithms and properties are often
-   * used for wrapping a key versues encrypting arbitrary data.
-   *
-   * The Promise, when fulfilled, returns an object with the following
-   * properties:
-   *
-   * + **data**: The ciphertext data
-   * + **mac**: The associated message authentication code (MAC).
-   *
-   * @param {String} alg The encryption algorithm
-   * @param {Buffer|String} data The data to encrypt
-   * @param {Object} [props] Additional properties for the encryption
-   *        algorithm.
-   * @returns {Promise} The promise for the encryption operation.
-   * @throws {Error} If {alg} is not appropriate for this Key; or if
-   *         this Key does not contain the appropriate parameters.
-   */
-  Object.defineProperty(this, "encrypt", {
-    value: function(alg, data, props) {
-      // validate appropriateness
-      if (this.algorithms("encrypt").indexOf(alg) === -1) {
-        return Promise.reject(new Error("unsupported algorithm"));
-      }
-      var k = cfg.encryptKey.call(this, alg, keys);
-      if (!k) {
-        return Promise.reject(new Error("improper key"));
-      }
-
-      // prepare properties (if any)
-      props = (props) ?
-              clone(props) :
-              {};
-      if (cfg.encryptProps) {
-        props = merge(props, cfg.encryptProps.call(this, alg, props));
-      }
-      return ALGORITHMS.encrypt(alg, k, data, props);
-    }
-  });
-  /**
-   * @method JWK.Key#decrypt
-   * @description
-   * Decrypts the given data using the specified algorithm.
-   *
-   * **NOTE:** This is the primitive decryption operation; the input is
-   * _**NOT**_ a JSON Web Encryption (JWE) object.
-   *
-   * **NOTE:** This operation is treated as distinct from {@link
-   * JWK.Key#unwrap}, as different algorithms and properties are often used
-   * for unwrapping a key versues decrypting arbitrary data.
-   *
-   * The Promise, when fulfilled, returns the plaintext data.
-   *
-   * @param {String} alg The decryption algorithm.
-   * @param {Buffer|String} data The data to decypt.
-   * @param {Object} [props] Additional data for the decryption operation.
-   * @returns {Promise} The promise for the decryption operation.
-   * @throws {Error} If {alg} is not appropriate for this Key; or if
-   *         the Key does not contain the appropriate properties.
-   */
-  Object.defineProperty(this, "decrypt", {
-    value: function(alg, data, props) {
-      // validate appropriateness
-      if (this.algorithms("decrypt").indexOf(alg) === -1) {
-        return Promise.reject(new Error("unsupported algorithm"));
-      }
-      var k = cfg.decryptKey.call(this, alg, keys);
-      if (!k) {
-        return Promise.reject(new Error("improper key"));
-      }
-
-      // prepare properties (if any)
-      props = (props) ?
-              clone(props) :
-              {};
-      if (cfg.decryptProps) {
-        props = merge(props, cfg.decryptProps.call(this, alg, props));
-      }
-      return ALGORITHMS.decrypt(alg, k, data, props);
-    }
-  });
-
-  /**
-   * @method JWK.Key#wrap
-   * @description
-   * Wraps the given key using the specified algorithm.
-   *
-   * **NOTE:** This is the primitive encryption operation; the output is
-   * _**NOT**_ a JSON Web Encryption (JWE) object.
-   *
-   * **NOTE:** This operation is treated as distinct from {@link
-   * JWK.Key#encrypt}, as different algorithms and properties are
-   * often used for wrapping a key versues encrypting arbitrary data.
-   *
-   * The Promise, when fulfilled, returns an object with the following
-   * properties:
-   *
-   * + **data**: The ciphertext data
-   * + **headers**: The additional header parameters to apply to a JWE.
-   *
-   * @param {String} alg The encryption algorithm
-   * @param {Buffer|String} data The data to encrypt
-   * @param {Object} [props] Additional properties for the encryption
-   *        algorithm.
-   * @returns {Promise} The promise for the encryption operation.
-   * @throws {Error} If {alg} is not appropriate for this Key; or if
-   *         this Key does not contain the appropriate parameters.
-   */
-  Object.defineProperty(this, "wrap", {
-    value: function(alg, data, props) {
-      // validate appropriateness
-      if (this.algorithms("wrap").indexOf(alg) === -1) {
-        return Promise.reject(new Error("unsupported algorithm"));
-      }
-      var k = cfg.wrapKey.call(this, alg, keys);
-      if (!k) {
-        return Promise.reject(new Error("improper key"));
-      }
-
-      // prepare properties (if any)
-      props = (props) ?
-              clone(props) :
-              {};
-      if (cfg.wrapProps) {
-        props = merge(props, cfg.wrapProps.call(this, alg, props));
-      }
-      return ALGORITHMS.encrypt(alg, k, data, props);
-    }
-  });
-  /**
-   * @method JWK.Key#unwrap
-   * @description
-   * Unwraps the given key using the specified algorithm.
-   *
-   * **NOTE:** This is the primitive unwrap operation; the input is
-   * _**NOT**_ a JSON Web Encryption (JWE) object.
-   *
-   * **NOTE:** This operation is treated as distinct from {@link
-   * JWK.Key#decrypt}, as different algorithms and properties are often used
-   * for unwrapping a key versues decrypting arbitrary data.
-   *
-   * The Promise, when fulfilled, returns the unwrapped key.
-   *
-   * @param {String} alg The unwrap algorithm.
-   * @param {Buffer|String} data The data to unwrap.
-   * @param {Object} [props] Additional data for the unwrap operation.
-   * @returns {Promise} The promise for the unwrap operation.
-   * @throws {Error} If {alg} is not appropriate for this Key; or if
-   *         the Key does not contain the appropriate properties.
-   */
-  Object.defineProperty(this, "unwrap", {
-    value: function(alg, data, props) {
-      // validate appropriateness
-      if (this.algorithms("unwrap").indexOf(alg) === -1) {
-        return Promise.reject(new Error("unsupported algorithm"));
-      }
-      var k = cfg.unwrapKey.call(this, alg, keys);
-      if (!k) {
-        return Promise.reject(new Error("improper key"));
-      }
-
-      // prepare properties (if any)
-      props = (props) ?
-              clone(props) :
-              {};
-      if (cfg.unwrapProps) {
-        props = merge(props, cfg.unwrapProps.call(this, alg, props));
-      }
-      return ALGORITHMS.decrypt(alg, k, data, props);
-    }
-  });
-};
-
-module.exports = JWKBaseKeyObject;
-
-}).call(this,{"isBuffer":require("../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js")})
-},{"../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js":146,"../algorithms":89,"../util":128,"../util/merge":129,"./constants.js":111,"./helpers.js":113,"lodash.assign":26,"lodash.clone":27,"lodash.flatten":29,"lodash.intersection":30,"lodash.omit":38,"lodash.pick":41,"lodash.uniq":44,"uuid":134}],111:[function(require,module,exports){
-/*!
- * jwk/constants.js - Constants for JWKs
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-module.exports = {
-  MODE_SIGN: "sign",
-  MODE_VERIFY: "verify",
-  MODE_ENCRYPT: "encrypt",
-  MODE_DECRYPT: "decrypt",
-  MODE_WRAP: "wrap",
-  MODE_UNWRAP: "unwrap"
-};
-
-},{}],112:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwk/rsa.js - RSA Key Representation
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var ecutil = require("../algorithms/ec-util.js"),
-    forge = require("../deps/forge"),
-    depsecc = require("../deps/ecc");
-
-var JWK = {
-  BaseKey: require("./basekey.js"),
-  helpers: require("./helpers.js")
-};
-
-var SIG_ALGS = [
-  "ES256",
-  "ES384",
-  "ES512"
-];
-var WRAP_ALGS = [
-  "ECDH-ES",
-  "ECDH-ES+A128KW",
-  "ECDH-ES+A192KW",
-  "ECDH-ES+A256KW"
-];
-
-var EC_OID = "1.2.840.10045.2.1";
-function oidToCurveName(oid) {
-  switch (oid) {
-    case "1.2.840.10045.3.1.7":
-      return "P-256";
-    case "1.3.132.0.34":
-      return "P-384";
-    case "1.3.132.0.35":
-      return "P-521";
-    default:
-      return null;
-  }
-}
-function curveNameToOid(crv) {
-  switch (crv) {
-    case "P-256":
-      return "1.2.840.10045.3.1.7";
-    case "P-384":
-      return "1.3.132.0.34";
-    case "P-521":
-      return "1.3.132.0.35";
-    default:
-      return null;
-  }
-}
-
-var JWKEcCfg = {
-  publicKey: function(props) {
-    var fields = JWK.helpers.COMMON_PROPS.concat([
-      {name: "crv", type: "string"},
-      {name: "x", type: "binary"},
-      {name: "y", type: "binary"}
-    ]);
-    var pk = JWK.helpers.unpackProps(props, fields);
-    if (pk && pk.crv && pk.x && pk.y) {
-      pk.length = ecutil.curveSize(pk.crv);
-    } else {
-      delete pk.crv;
-      delete pk.x;
-      delete pk.y;
-    }
-
-    return pk;
-  },
-  privateKey: function(props) {
-    var fields = JWK.helpers.COMMON_PROPS.concat([
-      {name: "crv", type: "string"},
-      {name: "x", type: "binary"},
-      {name: "y", type: "binary"},
-      {name: "d", type: "binary"}
-    ]);
-    var pk = JWK.helpers.unpackProps(props, fields);
-    if (pk && pk.crv && pk.x && pk.y && pk.d) {
-      pk.length = ecutil.curveSize(pk.crv);
-    } else {
-      pk = undefined;
-    }
-
-    return pk;
-  },
-  thumbprint: function(json) {
-    if (json.public) {
-      json = json.public;
-    }
-    var fields = {
-      crv: json.crv,
-      kty: "EC",
-      x: json.x,
-      y: json.y
-    };
-    return fields;
-  },
-  algorithms: function(keys, mode) {
-    var len = (keys.public && keys.public.length) ||
-              (keys.private && keys.private.length) ||
-              0;
-    // NOTE: 521 is the actual, but 512 is the expected
-    if (len === 521) {
-        len = 512;
-    }
-
-    switch (mode) {
-      case "encrypt":
-      case "decrypt":
-        return [];
-      case "wrap":
-        return (keys.public && WRAP_ALGS) || [];
-      case "unwrap":
-        return (keys.private && WRAP_ALGS) || [];
-      case "sign":
-        if (!keys.private) {
-          return [];
-        }
-        return SIG_ALGS.filter(function(a) {
-          return (a === ("ES" + len));
-        });
-      case "verify":
-        if (!keys.public) {
-          return [];
-        }
-        return SIG_ALGS.filter(function(a) {
-          return (a === ("ES" + len));
-        });
-    }
-  },
-
-  encryptKey: function(alg, keys) {
-    return keys.public;
-  },
-  decryptKey: function(alg, keys) {
-    return keys.private;
-  },
-
-  wrapKey: function(alg, keys) {
-    return keys.public;
-  },
-  unwrapKey: function(alg, keys) {
-    return keys.private;
-  },
-
-  signKey: function(alg, keys) {
-    return keys.private;
-  },
-  verifyKey: function(alg, keys) {
-    return keys.public;
-  },
-
-  convertToPEM: function(key, isPrivate) {
-    // curveName to OID
-    var oid = key.crv;
-    oid = curveNameToOid(oid);
-    oid = forge.asn1.oidToDer(oid);
-    // key as bytes
-    var type,
-        pub,
-        asn1;
-    if (isPrivate) {
-      type = "EC PRIVATE KEY";
-      pub = Buffer.concat([
-        new Buffer([0x00, 0x04]),
-        key.x,
-        key.y
-      ]).toString("binary");
-      key = key.d.toString("binary");
-      asn1 = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
-        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.INTEGER, false, "\u0001"),
-        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OCTETSTRING, false, key),
-        forge.asn1.create(forge.asn1.Class.CONTEXT_SPECIFIC, 0, true, [
-          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, false, oid.bytes())
-        ]),
-        forge.asn1.create(forge.asn1.Class.CONTEXT_SPECIFIC, 1, true, [
-          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.BITSTRING, false, pub)
-        ])
-      ]);
-    } else {
-      type = "PUBLIC KEY";
-      key = Buffer.concat([
-        new Buffer([0x00, 0x04]),
-        key.x,
-        key.y
-      ]).toString("binary");
-      asn1 = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
-        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
-          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, false, forge.asn1.oidToDer(EC_OID).bytes()),
-          forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, false, oid.bytes())
-        ]),
-        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.BITSTRING, false, key)
-      ]);
-    }
-    asn1 = forge.asn1.toDer(asn1).bytes();
-    var pem = forge.pem.encode({
-      type: type,
-      body: asn1
-    });
-    return pem;
-  }
-};
-
-// Inspired by digitalbaazar/node-forge/js/rsa.js
-var validators = {
-  oid: EC_OID,
-  privateKey: {
-    // ECPrivateKey
-    name: "ECPrivateKey",
-    tagClass: forge.asn1.Class.UNIVERSAL,
-    type: forge.asn1.Type.SEQUENCE,
-    constructed: true,
-    value: [
-      {
-        // EC version
-        name: "ECPrivateKey.version",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false
-      },
-      {
-        // private value (d)
-        name: "ECPrivateKey.private",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.OCTETSTRING,
-        constructed: false,
-        capture: "d"
-      },
-      {
-        // EC parameters
-        tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
-        name: "ECPrivateKey.parameters",
-        constructed: true,
-        value: [
-          {
-            // namedCurve (crv)
-            name: "ECPrivateKey.namedCurve",
-            tagClass: forge.asn1.Class.UNIVERSAL,
-            type: forge.asn1.Type.OID,
-            constructed: false,
-            capture: "crv"
-          }
-        ]
-      },
-      {
-        // publicKey
-        name: "ECPrivateKey.publicKey",
-        tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
-        constructed: true,
-        value: [
-          {
-            name: "ECPrivateKey.point",
-            tagClass: forge.asn1.Class.UNIVERSAL,
-            type: forge.asn1.Type.BITSTRING,
-            constructed: false,
-            capture: "point"
-          }
-        ]
-      }
-    ]
-  },
-  embeddedPrivateKey: {
-    // ECPrivateKey
-    name: "ECPrivateKey",
-    tagClass: forge.asn1.Class.UNIVERSAL,
-    type: forge.asn1.Type.SEQUENCE,
-    constructed: true,
-    value: [
-      {
-        // EC version
-        name: "ECPrivateKey.version",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false
-      },
-      {
-        // private value (d)
-        name: "ECPrivateKey.private",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.OCTETSTRING,
-        constructed: false,
-        capture: "d"
-      },
-      {
-        // publicKey
-        name: "ECPrivateKey.publicKey",
-        tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
-        constructed: true,
-        value: [
-          {
-            name: "ECPrivateKey.point",
-            tagClass: forge.asn1.Class.UNIVERSAL,
-            type: forge.asn1.Type.BITSTRING,
-            constructed: false,
-            capture: "point"
-          }
-        ]
-      }
-    ]
-  }
-};
-
-var JWKEcFactory = {
-  kty: "EC",
-  validators: validators,
-  prepare: function(props) {
-    // TODO: validate key properties
-    var cfg = JWKEcCfg;
-    var p = Promise.resolve(props);
-    p = p.then(function(json) {
-      return JWK.helpers.thumbprint(cfg, json);
-    });
-    p = p.then(function(hash) {
-      var prints = {};
-      prints[JWK.helpers.INTERNALS.THUMBPRINT_HASH] = hash;
-      props[JWK.helpers.INTERNALS.THUMBPRINT_KEY] = prints;
-      return cfg;
-    });
-    return p;
-  },
-  generate: function(size) {
-    var keypair = depsecc.generateKeyPair(size);
-    var result = {
-      "crv": size,
-      "x": keypair.public.x,
-      "y": keypair.public.y,
-      "d": keypair.private.d
-    };
-    return Promise.resolve(result);
-  },
-  import: function(input) {
-    if (validators.oid !== input.keyOid) {
-      return null;
-    }
-
-    // coerce key params to OID
-    var crv;
-    if (input.keyParams && forge.asn1.Type.OID === input.keyParams.type) {
-      crv = forge.asn1.derToOid(input.keyParams.value);
-      crv = oidToCurveName(crv);
-    } else if (input.crv) {
-      crv = forge.asn1.derToOid(input.crv);
-      crv = oidToCurveName(crv);
-    }
-    if (!crv) {
-      return null;
-    }
-
-    if (!input.parsed) {
-      var capture = {},
-          errors = [];
-      if ("private" === input.type) {
-        // coerce capture.value to DER *iff* private
-        if ("string" === typeof input.keyValue) {
-          input.keyValue = forge.asn1.fromDer(input.keyValue);
-        } else if (Array.isArray(input.keyValue)) {
-          input.keyValue = input.keyValue[0];
-        }
-
-        if (!forge.asn1.validate(input.keyValue,
-                                 validators.embeddedPrivateKey,
-                                 capture,
-                                 errors)) {
-          return null;
-        }
-      } else {
-        capture.point = input.keyValue;
-      }
-      input = capture;
-    }
-
-    // convert factors to Buffers
-    var output = {
-      kty: "EC",
-      crv: crv
-    };
-    if (input.d) {
-      output.d = new Buffer(input.d, "binary");
-    }
-    if (input.point) {
-      var pt = new Buffer(input.point, "binary");
-      // only support uncompressed
-      if (4 !== pt.readUInt16BE(0)) {
-        return null;
-      }
-      pt = pt.slice(2);
-      var len = pt.length / 2;
-      output.x = pt.slice(0, len);
-      output.y = pt.slice(len);
-    }
-    return output;
-  }
-};
-// public API
-module.exports = Object.freeze({
-  config: JWKEcCfg,
-  factory: JWKEcFactory
-});
-
-// registration
-(function(REGISTRY) {
-  REGISTRY.register(JWKEcFactory);
-})(require("./keystore").registry);
-
-}).call(this,require("buffer").Buffer)
-},{"../algorithms/ec-util.js":83,"../deps/ecc":101,"../deps/forge":103,"./basekey.js":110,"./helpers.js":113,"./keystore":115,"buffer":140}],113:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwk/helpers.js - JWK Internal Helper Functions and Constants
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var clone = require("lodash.clone"),
-    util = require("../util"),
-    forge = require("../deps/forge");
-
-var ALGORITHMS = require("../algorithms");
-
-// ### ASN.1 Validators
-// Adapted from digitalbazaar/node-forge/js/asn1.js
-// PrivateKeyInfo
-var privateKeyValidator = {
-  name: "PrivateKeyInfo",
-  tagClass: forge.asn1.Class.UNIVERSAL,
-  type: forge.asn1.Type.SEQUENCE,
-  constructed: true,
-  value: [
-    {
-      // Version (INTEGER)
-      name: "PrivateKeyInfo.version",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.INTEGER,
-      constructed: false,
-      capture: "keyVersion"
-    },
-    {
-      name: "PrivateKeyInfo.privateKeyAlgorithm",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.SEQUENCE,
-      constructed: true,
-      value: [
-        {
-          name: "AlgorithmIdentifier.algorithm",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.OID,
-          constructed: false,
-          capture: "keyOid"
-        },
-        {
-          name: "AlgorithmIdentifier.parameters",
-          captureAsn1: "keyParams"
-        }
-      ]
-    },
-    {
-      name: "PrivateKeyInfo",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.OCTETSTRING,
-      constructed: false,
-      capture: "keyValue"
-    }
-  ]
-};
-// Adapted from digitalbazaar/node-forge/x509.js
-var publicKeyValidator = {
-  name: "SubjectPublicKeyInfo",
-  tagClass: forge.asn1.Class.UNIVERSAL,
-  type: forge.asn1.Type.SEQUENCE,
-  constructed: true,
-  value: [
-    {
-      name: "SubjectPublicKeyInfo.AlgorithmIdentifier",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.SEQUENCE,
-      constructed: true,
-      value: [
-        {
-          name: "AlgorithmIdentifier.algorithm",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.OID,
-          constructed: false,
-          capture: "keyOid"
-        },
-        {
-          name: "AlgorithmIdentifier.parameters",
-          captureAsn1: "keyParams"
-        }
-      ]
-    },
-    {
-      name: "SubjectPublicKeyInfo.subjectPublicKey",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.BITSTRING,
-      constructed: false,
-      capture: "keyValue"
-    }
-  ]
-};
-// Adapted from digitalbazaar/node-forge/x509.js
-var X509CertificateValidator = {
-  name: "Certificate",
-  tagClass: forge.asn1.Class.UNIVERSAL,
-  type: forge.asn1.Type.SEQUENCE,
-  constructed: true,
-  value: [
-    {
-      name: "Certificate.TBSCertificate",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.SEQUENCE,
-      constructed: true,
-      captureAsn1: "certificate",
-      value: [
-        {
-          name: "Certificate.TBSCertificate.version",
-          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
-          type: 0,
-          constructed: true,
-          optional: true,
-          value: [
-            {
-              name: "Certificate.TBSCertificate.version.integer",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.INTEGER,
-              constructed: false,
-              capture: "certVersion"
-            }
-          ]
-        },
-        {
-          name: "Certificate.TBSCertificate.serialNumber",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.INTEGER,
-          constructed: false,
-          capture: "certSerialNumber"
-        },
-        {
-          name: "Certificate.TBSCertificate.signature",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.SEQUENCE,
-          constructed: true,
-          value: [
-            {
-              name: "Certificate.TBSCertificate.signature.algorithm",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.OID,
-              constructed: false,
-              capture: "certSignatureOid"
-            }, {
-              name: "Certificate.TBSCertificate.signature.parameters",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              optional: true,
-              captureAsn1: "certSignatureParams"
-            }
-          ]
-        },
-        {
-          name: "Certificate.TBSCertificate.issuer",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.SEQUENCE,
-          constructed: true,
-          captureAsn1: "certIssuer"
-        },
-        {
-          name: "Certificate.TBSCertificate.validity",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.SEQUENCE,
-          constructed: true,
-          // Note: UTC and generalized times may both appear so the capture
-          // names are based on their detected order, the names used below
-          // are only for the common case, which validity time really means
-          // "notBefore" and which means "notAfter" will be determined by order
-          value: [
-            {
-              // notBefore (Time) (UTC time case)
-              name: "Certificate.TBSCertificate.validity.notBefore (utc)",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.UTCTIME,
-              constructed: false,
-              optional: true,
-              capture: "certValidity1UTCTime"
-            },
-            {
-              // notBefore (Time) (generalized time case)
-              name: "Certificate.TBSCertificate.validity.notBefore (generalized)",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.GENERALIZEDTIME,
-              constructed: false,
-              optional: true,
-              capture: "certValidity2GeneralizedTime"
-            },
-            {
-              // notAfter (Time) (only UTC time is supported)
-              name: "Certificate.TBSCertificate.validity.notAfter (utc)",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.UTCTIME,
-              constructed: false,
-              optional: true,
-              capture: "certValidity3UTCTime"
-            },
-            {
-              // notAfter (Time) (only UTC time is supported)
-              name: "Certificate.TBSCertificate.validity.notAfter (generalized)",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.GENERALIZEDTIME,
-              constructed: false,
-              optional: true,
-              capture: "certValidity4GeneralizedTime"
-            }
-          ]
-        }, {
-          // Name (subject) (RDNSequence)
-          name: "Certificate.TBSCertificate.subject",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.SEQUENCE,
-          constructed: true,
-          captureAsn1: "certSubject"
-        },
-        // SubjectPublicKeyInfo
-        publicKeyValidator,
-        {
-          // issuerUniqueID (optional)
-          name: "Certificate.TBSCertificate.issuerUniqueID",
-          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
-          type: 1,
-          constructed: true,
-          optional: true,
-          value: [
-            {
-              name: "Certificate.TBSCertificate.issuerUniqueID.id",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.BITSTRING,
-              constructed: false,
-              capture: "certIssuerUniqueId"
-            }
-          ]
-        },
-        {
-          // subjectUniqueID (optional)
-          name: "Certificate.TBSCertificate.subjectUniqueID",
-          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
-          type: 2,
-          constructed: true,
-          optional: true,
-          value: [
-            {
-              name: "Certificate.TBSCertificate.subjectUniqueID.id",
-              tagClass: forge.asn1.Class.UNIVERSAL,
-              type: forge.asn1.Type.BITSTRING,
-              constructed: false,
-              capture: "certSubjectUniqueId"
-            }
-          ]
-        },
-        {
-          // Extensions (optional)
-          name: "Certificate.TBSCertificate.extensions",
-          tagClass: forge.asn1.Class.CONTEXT_SPECIFIC,
-          type: 3,
-          constructed: true,
-          captureAsn1: "certExtensions",
-          optional: true
-        }
-      ]
-    },
-    {
-      // AlgorithmIdentifier (signature algorithm)
-      name: "Certificate.signatureAlgorithm",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.SEQUENCE,
-      constructed: true,
-      value: [
-        {
-          // algorithm
-          name: "Certificate.signatureAlgorithm.algorithm",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          type: forge.asn1.Type.OID,
-          constructed: false,
-          capture: "certSignatureOid"
-        },
-        {
-          name: "Certificate.TBSCertificate.signature.parameters",
-          tagClass: forge.asn1.Class.UNIVERSAL,
-          optional: true,
-          captureAsn1: "certSignatureParams"
-        }
-      ]
-    },
-    {
-      // SignatureValue
-      name: "Certificate.signatureValue",
-      tagClass: forge.asn1.Class.UNIVERSAL,
-      type: forge.asn1.Type.BITSTRING,
-      constructed: false,
-      capture: "certSignature"
-    }
-  ]
-};
-
-var INTERNALS = {
-  THUMBPRINT_KEY: "internal\u0000thumbprint",
-  THUMBPRINT_HASH: "SHA-256"
-};
-
-module.exports = {
-  validators: {
-    privateKey: privateKeyValidator,
-    publicKey: publicKeyValidator,
-    certificate: X509CertificateValidator
-  },
-
-  thumbprint: function(cfg, json, hash) {
-    if ("function" !== typeof cfg.thumbprint) {
-      return Promise.reject(new Error("thumbprint not supported"));
-    }
-
-    hash = (hash || INTERNALS.THUMBPRINT_HASH).toUpperCase();
-    var fields = cfg.thumbprint(json);
-    var input = Object.keys(fields).
-                sort().
-                map(function(k) {
-      var v = fields[k];
-      if (Buffer.isBuffer(v)) {
-        v = util.base64url.encode(v);
-      }
-      return JSON.stringify(k) + ":" + JSON.stringify(v);
-    });
-    input = "{" + input.join(",") + "}";
-    try {
-      return ALGORITHMS.digest(hash, new Buffer(input, "utf8"));
-    } catch (err) {
-      return Promise.reject(err);
-    }
-  },
-  unpackProps: function(props, allowed) {
-    var output;
-
-    // apply all of the existing values
-    allowed.forEach(function(cfg) {
-      if (!(cfg.name in props)) {
-        return;
-      }
-      output = output || {};
-      var value = props[cfg.name];
-      switch (cfg.type) {
-        case "binary":
-          if (Buffer.isBuffer(value)) {
-            value = value;
-            props[cfg.name] = util.base64url.encode(value);
-          } else {
-            value = util.base64url.decode(value);
-          }
-          break;
-        case "string":
-        case "number":
-        case "boolean":
-          value = value;
-          break;
-        case "array":
-          value = [].concat(value);
-          break;
-        case "object":
-          value = clone(value);
-          break;
-        default:
-          // TODO: deep clone?
-          value = value;
-          break;
-      }
-      output[cfg.name] = value;
-    });
-
-    // remove any from json that didn't apply
-    var check = output || {};
-    Object.keys(props).
-           forEach(function(n) {
-              if (n in check) { return; }
-              delete props[n];
-           });
-
-    return output;
-  },
-  COMMON_PROPS: [
-    {name: "kty", type: "string"},
-    {name: "kid", type: "string"},
-    {name: "use", type: "string"},
-    {name: "alg", type: "string"},
-    {name: "x5c", type: "array"},
-    {name: "x5t", type: "binary"},
-    {name: "x5u", type: "string"},
-    {name: "key_ops", type: "array"}
-  ],
-  INTERNALS: INTERNALS
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../algorithms":89,"../deps/forge":103,"../util":128,"buffer":140,"lodash.clone":27}],114:[function(require,module,exports){
-/*!
- * jwk/index.js - JSON Web Key (JWK) Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var JWKStore = require("./keystore.js");
-
-// Public API -- Key and KeyStore methods
-Object.keys(JWKStore.KeyStore).forEach(function(name) {
-  exports[name] = JWKStore.KeyStore[name];
-});
-
-// Public API -- constants
-var CONSTANTS = require("./constants.js");
-Object.keys(CONSTANTS).forEach(function(name) {
-  exports[name] = CONSTANTS[name];
-});
-
-// Registered Key Types
-require("./octkey.js");
-require("./rsakey.js");
-require("./eckey.js");
-
-},{"./constants.js":111,"./eckey.js":112,"./keystore.js":115,"./octkey.js":116,"./rsakey.js":117}],115:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwk/keystore.js - JWK KeyStore Implementation
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var clone = require("lodash.clone"),
-    merge = require("../util/merge"),
-    forge = require("../deps/forge"),
-    util = require("../util");
-
-var JWK = {
-  BaseKey: require("./basekey.js"),
-  helpers: require("./helpers.js")
-};
-
-/**
- * @class JWK.KeyStoreRegistry
- * @classdesc
- * A registry of JWK.Key types that can be used.
- *
- * @description
- * **NOTE:** This constructor cannot be called directly. Instead use the
- * global {JWK.registry}
- */
-var JWKRegistry = function() {
-  var types = {};
-
-  Object.defineProperty(this, "register", {
-    value: function(factory) {
-      if (!factory || "string" !== typeof factory.kty || !factory.kty) {
-        throw new Error("invalid Key factory");
-      }
-
-      var kty = factory.kty;
-      types[kty] = factory;
-      return this;
-    }
-  });
-  Object.defineProperty(this, "unregister", {
-    value: function(factory) {
-      if (!factory || "string" !== typeof factory.kty || !factory.kty) {
-        throw new Error("invalid Key factory");
-      }
-
-      var kty = factory.kty;
-      if (factory === types[kty]) {
-        delete types[kty];
-      }
-      return this;
-    }
-  });
-
-  Object.defineProperty(this, "get", {
-    value: function(kty) {
-      return types[kty || ""] || undefined;
-    }
-  });
-  Object.defineProperty(this, "all", {
-    value: function() {
-      return Object.keys(types).map(function(t) { return types[t]; });
-    }
-  });
-};
-
-// Globals
-var GLOBAL_REGISTRY = new JWKRegistry();
-
-// importer
-function processCert(input) {
-  // convert certIssuer to readable attributes
-  ["certIssuer", "certSubject"].forEach(function(field) {
-    /* eslint new-cap: [0] */
-    var attrs = forge.pki.RDNAttributesAsArray(input[field]);
-    var result = input[field] = {};
-    attrs.forEach(function(a) {
-      result[a.name || a.type] = a.value;
-    });
-  });
-
-  return input;
-}
-
-function fromPEM(input) {
-  var result = {};
-  var pems = forge.pem.decode(input);
-  var found = pems.some(function(p) {
-    switch (p.type) {
-      case "CERTIFICATE":
-        result.form = "pkix";
-        break;
-      case "PUBLIC KEY":
-        result.form = "spki";
-        break;
-      case "PRIVATE KEY":
-        result.form = "pkcs8";
-        break;
-      case "EC PRIVATE KEY":
-        /* eslint no-fallthrough: [0] */
-      case "RSA PRIVATE KEY":
-        result.form = "private";
-        break;
-      default:
-        return false;
-    }
-
-    result.body = p.body;
-    return true;
-  });
-  if (!found) {
-    throw new Error("supported PEM type not found");
-  }
-  return result;
-}
-function importFrom(registry, input) {
-  // form can be one of:
-  //  'private' | 'pkcs8' | 'public' | 'spki' | 'pkix' | 'x509'
-  var capture = {},
-      errors = [],
-      result;
-
-  // conver from DER to ASN1
-  var form = input.form,
-      der = input.body,
-      thumbprint = null;
-  input = forge.asn1.fromDer(der);
-  switch(form) {
-    case "private":
-      registry.all().some(function(factory) {
-        if (result) {
-          return false;
-        }
-        if (!factory.validators) {
-          return false;
-        }
-
-        var oid = factory.validators.oid,
-            validator = factory.validators.privateKey;
-        if (!validator) {
-          return false;
-        }
-        capture = {};
-        errors = [];
-        result = forge.asn1.validate(input, validator, capture, errors);
-        if (result) {
-          capture.keyOid = forge.asn1.oidToDer(oid);
-          capture.parsed = true;
-        }
-        return result;
-      });
-      capture.type = "private";
-      break;
-    case "pkcs8":
-      result = forge.asn1.validate(input, JWK.helpers.validators.privateKey, capture, errors);
-      capture.type = "private";
-      break;
-    case "public":
-      // eslint no-fallthrough: [0] */
-    case "spki":
-      result = forge.asn1.validate(input, JWK.helpers.validators.publicKey, capture, errors);
-      capture.type = "public";
-      break;
-    case "pkix":
-      /* eslint no-fallthrough: [0] */
-    case "x509":
-      result = forge.asn1.validate(input, JWK.helpers.validators.certificate, capture, errors);
-      if (result) {
-        capture = processCert(capture);
-        var md = forge.md.sha1.create();
-        md.update(der);
-        thumbprint = util.base64url.encode(new Buffer(md.digest().toHex(), "hex"));
-      }
-      capture.type = "public";
-      break;
-  }
-  if (!result) {
-    return null;
-  }
-
-  // convert oids
-  if (capture.keyOid) {
-    capture.keyOid = forge.asn1.derToOid(capture.keyOid);
-  }
-
-  // find and invoke the importer
-  result = null;
-  GLOBAL_REGISTRY.all().forEach(function(factory) {
-    if (result) {
-      return;
-    }
-    if (!factory) {
-      return;
-    }
-    if ("function" !== typeof factory.import) {
-      return;
-    }
-    result = factory.import(capture);
-  });
-  if (result && capture.certSubject && capture.certSubject.commonName) {
-    result.kid = capture.certSubject.commonName;
-  }
-  if (result && thumbprint) {
-    result.x5t = thumbprint;
-  }
-  return result;
-}
-
-/**
- * @class JWK.KeyStore
- * @classdesc
- * Represents a collection of Keys.
- *
- * @description
- * **NOTE:** This constructor cannot be called directly. Instead call {@link
- * JWK.createKeyStore}.
- */
-var JWKStore = function(registry, parent) {
-  var keysets = {};
-
-  /**
-   * @method JWK.KeyStore#generate
-   * @description
-   * Generates a new random Key into this KeyStore.
-   *
-   * The type of {size} depends on the value of {kty}:
-   *
-   * + **`EC`**: String naming the curve to use, which can be one of:
-   *   `"P-256"`, `"P-384"`, or `"P-521"` (default is **`"P-256"`**).
-   * + **`RSA`**: Number describing the size of the key, in bits (default is
-   *   **`2048`**).
-   * + **`oct`**: Number describing the size of the key, in bits (default is
-   *   **`256`**).
-   *
-   * Any properties in {props} are applied before the key is generated,
-   * and are expected to be data types acceptable in JSON.  This allows the
-   * generated key to have a specific key identifier, or to specify its
-   * acceptable usage.
-   *
-   * The returned Promise, when fulfilled, returns the generated Key.
-   *
-   * @param {String} kty The type of generated key
-   * @param {String|Number} [size] The size of the generated key
-   * @param {Object} [props] Additional properties to apply to the generated
-   *        key.
-   * @returns {Promise} The promise for the generated Key
-   * @throws {Error} If {kty} is not supported
-   */
-  Object.defineProperty(this, "generate", {
-    value: function(kty, size, props) {
-      var keytype = registry.get(kty);
-      if (!keytype) {
-        return Promise.reject(new Error("unsupported key type"));
-      }
-
-      props = clone(props || {});
-      props.kty = kty;
-
-      var self = this,
-          promise = keytype.generate(size);
-      return promise.then(function(jwk) {
-        jwk = merge(props, jwk, {
-          kty: kty
-        });
-        return self.add(jwk);
-      });
-    }
-  });
-  /**
-   * @method JWK.KeyStore#add
-   * @description
-   * Adds a Key to this KeyStore. If {jwk} is a string, it is first
-   * parsed into a plain JSON object. If {jwk} is already an instance
-   * of JWK.Key, its (public) JSON representation is first obtained
-   * then applied to a new JWK.Key object within this KeyStore.
-   *
-   * @param {String|Object} jwk The JSON Web Key (JWK)
-   * @param {String} [form] The format of a String key to expect
-   * @param {Object} [extras] extra jwk fields inserted when importing from a non json string (eg "pem")
-   * @returns {Promise} The promise for the added key
-   */
-  Object.defineProperty(this, "add", {
-    value: function(jwk, form, extras) {
-      extras = extras || {};
-
-      var factors;
-      if (Buffer.isBuffer(jwk) || typeof jwk === "string") {
-        // form can be 'json', 'pkcs8', 'spki', 'pkix', 'x509', 'pem'
-        form = (form || "json").toLowerCase();
-        if ("json" === form) {
-          jwk = JSON.parse(jwk.toString("utf8"));
-        } else {
-          try {
-            if ("pem" === form) {
-              // convert *first* PEM -> DER
-              factors = fromPEM(jwk);
-            } else {
-              factors = {
-                body: jwk.toString("binary"),
-                form: form
-              };
-            }
-            jwk = importFrom(registry, factors);
-            if (!jwk) {
-              throw new Error("no importer for key");
-            }
-            Object.keys(extras).forEach(function(field){
-              jwk[field] = extras[field];
-            });
-          } catch (err) {
-            return Promise.reject(err);
-          }
-        }
-      } else if (JWKStore.isKey(jwk)) {
-        // assume a complete duplicate is desired
-        jwk = jwk.toJSON(true);
-      }
-
-      var keytype = registry.get(jwk.kty);
-      if (!keytype) {
-        return Promise.reject(new Error("unsupported key type"));
-      }
-
-      var self = this,
-          promise = keytype.prepare(jwk);
-      return promise.then(function(cfg) {
-        return new JWK.BaseKey(jwk.kty, self, jwk, cfg);
-      }).then(function(jwk) {
-        var kid = jwk.kid || "";
-        var keys = keysets[kid] = keysets[kid] || [];
-        keys.push(jwk);
-
-        return jwk;
-      });
-    }
-  });
-  /**
-   * @method JWK.KeyStore#remove
-   * @description
-   * Removes a Key from this KeyStore.
-   *
-   * **NOTE:** The removed Key's {keystore} property is not changed.
-   *
-   * @param {JWK.Key} jwk The key to remove.
-   */
-  Object.defineProperty(this, "remove", {
-    value: function(jwk) {
-      if (!jwk) {
-        return;
-      }
-
-      var keys = keysets[jwk.kid];
-      if (!keys) {
-        return;
-      }
-
-      var pos = keys.indexOf(jwk);
-      if (pos === -1) {
-        return;
-      }
-
-      keys.splice(pos, 1);
-      if (!keys.length) {
-        delete keysets[jwk.kid];
-      }
-    }
-  });
-
-  /**
-   * @method JWK.KeyStore#all
-   * @description
-   * Retrieves all of the contained Keys that optinally match all of the
-   * given properties.
-   *
-   * If {props} are specified, this method only returns Keys which exactly
-   * match the given properties. The properties can be any of the
-   * following:
-   *
-   * + **alg**: The algorithm for the Key.
-   * + **use**: The usage for the Key.
-   * + **kid**: The identifier for the Key.
-   *
-   * If no properties are given, this method returns all of the Keys for this
-   * KeyStore.
-   *
-   * @param {Object} [props] The properties to match against
-   * @param {Boolean} [local = false] `true` if only the Keys
-   *        directly contained by this KeyStore should be returned, or
-   *        `false` if it should return all Keys of this KeyStore and
-   *        its ancestors.
-   * @returns {JWK.Key[]} The list of matching Keys, or an empty array if no
-   *          matches are found.
-   */
-  Object.defineProperty(this, "all", {
-    value: function(props, local) {
-      props = props || {};
-
-      var candidates = [];
-      var matches = function(key) {
-        // match on 'kty'
-        if (props.kty &&
-            key.kty &&
-            props.kty !== key.kty) {
-          return false;
-        }
-        // match on 'use'
-        if (props.use &&
-            key.use &&
-            props.use !== key.use) {
-          return false;
-        }
-        // match on 'alg'
-        if (props.alg) {
-          if (props.alg !== "dir" &&
-              key.alg &&
-              props.alg !== key.alg) {
-            return false;
-          }
-          return key.supports(props.alg);
-        }
-        //TODO: match on 'key_ops'
-
-        return true;
-      };
-      Object.keys(keysets).forEach(function(id) {
-        if (props.kid && props.kid !== id) {
-          return;
-        }
-
-        var keys = keysets[id].filter(matches);
-        if (keys.length) {
-          candidates = candidates.concat(keys);
-        }
-      });
-
-      if (!local && parent) {
-        candidates = candidates.concat(parent.all(props));
-      }
-
-      return candidates;
-    }
-  });
-  /**
-   * @method JWK.KeyStore#get
-   * @description
-   * Retrieves the contained Key matching the given {kid}, and optionally
-   * all of the given properties.  This method equivalent to calling
-   * {@link JWK.Store#all}, then returning the first Key whose
-   * "kid" is {kid}. If {kid} is undefined, then the first Key that
-   * is returned from `all()` is returned.
-   *
-   * @param {String} [kid] The key identifier to match against.
-   * @param {Object} [props] The properties to match against.
-   * @param {Boolean} [local = false] `true` if only the Keys
-   *        directly contained by this KeyStore should be returned, or
-   *        `false` if it should return all Keys of this KeyStore and
-   *        its ancestors.
-   * @returns {JWK.Key} The Key matching {kid} and {props}, or `null`
-   *          if no match is found.
-   */
-  Object.defineProperty(this, "get", {
-    value: function(kid, props, local) {
-      // reconcile arguments
-      if (typeof kid === "boolean") {
-        local = kid;
-        props = kid = null;
-      } else if (typeof kid === "object") {
-        local = props;
-        props = kid;
-        kid = null;
-      }
-
-      // fixup props
-      props = props || {};
-      if (kid) {
-        props.kid = kid;
-      }
-
-      var candidates = this.all(props, true);
-      if (!candidates.length && parent && !local) {
-        candidates = parent.get(props, local);
-      }
-      return candidates[0] || null;
-    }
-  });
-
-  /**
-   * @method JWK.KeyStore#temp
-   * @description
-   * Creates a temporary KeyStore based on this KeyStore.
-   *
-   * @returns {JWK.KeyStore} The temporary KeyStore.
-   */
-  Object.defineProperty(this, "temp", {
-    value: function() {
-      return new JWKStore(registry, this);
-    }
-  });
-
-  /**
-   * @method JWK.KeyStore#toJSON
-   * @description
-   * Generates a JSON representation of this KeyStore, which conforms
-   * to a JWK Set from {I-D.ietf-jose-json-web-key}.
-   *
-   * @param {Boolean} [isPrivate = false] `true` if the private fields
-   *        of stored keys are to be included.
-   * @returns {Object} The JSON representation of this KeyStore.
-   */
-  Object.defineProperty(this, "toJSON", {
-    value: function(isPrivate) {
-      var keys = [];
-
-      Object.keys(keysets).forEach(function(kid) {
-        var items = keysets[kid].map(function(k) {
-          return k.toJSON(isPrivate);
-        });
-        keys = keys.concat(items);
-      });
-
-      return {
-        keys: keys
-      };
-    }
-  });
-};
-
-/**
- * Determines if the given object is an instance of JWK.KeyStore.
- *
- * @param {Object} obj The object to test
- * @returns {Boolean} `true` if {obj} is an instance of JWK.KeyStore,
- *          and `false` otherwise.
- */
-JWKStore.isKeyStore = function(obj) {
-  if (!obj) {
-    return false;
-  }
-
-  if ("object" !== typeof obj) {
-    return false;
-  }
-
-  if ("function" !== typeof obj.get ||
-      "function" !== typeof obj.all ||
-      "function" !== typeof obj.generate ||
-      "function" !== typeof obj.add ||
-      "function" !== typeof obj.remove) {
-    return false;
-  }
-
-  return true;
-};
-
-/**
- * Creates a new empty KeyStore.
- *
- * @returns {JWK.KeyStore} The empty KeyStore.
- */
-JWKStore.createKeyStore = function() {
-  return new JWKStore(GLOBAL_REGISTRY);
-};
-
-/**
- * Coerces the given object into a KeyStore. This method uses the following
- * algorithm to coerce {ks}:
- *
- * 1. if {ks} is an instance of JWK.KeyStore, it is returned directly
- * 2. if {ks} is a string, it is parsed into a JSON value
- * 3. if {ks} is an array, it creates a new JWK.KeyStore and calls {@link
- *    JWK.KeyStore#add} for each element in the {ks} array.
- * 4. if {ks} is a JSON object, it creates a new JWK.KeyStore and calls {@link
- *    JWK.KeyStore#add} for each element in the "keys" property.
- *
- * @param {Object|String} ks The value to coerce into a
- *        KeyStore
- * @returns {Promise(JWK.KeyStore)} A promise for the coerced KeyStore.
- */
-JWKStore.asKeyStore = function(ks) {
-  if (JWKStore.isKeyStore(ks)) {
-    return Promise.resolve(ks);
-  }
-
-  var store = JWKStore.createKeyStore(),
-      keys;
-
-  if (typeof ks === "string") {
-    ks = JSON.parse(ks);
-  }
-
-  if (Array.isArray(ks)) {
-    keys = ks;
-  } else if ("keys" in ks) {
-    keys = ks.keys;
-  } else {
-    return Promise.reject("invalid keystore");
-  }
-
-  keys = keys.map(function(k) {
-    return store.add(k);
-  });
-
-  var promise = Promise.all(keys);
-  promise = promise.then(function() {
-    return store;
-  });
-
-  return promise;
-};
-
-
-/**
- * Determines if the given object is a JWK.Key instance.
- *
- * @param {Object} obj The object to test
- * @returns `true` if {obj} is a JWK.Key
- */
-JWKStore.isKey = function(obj) {
-  if (!obj) {
-    return false;
-  }
-
-  if ("object" !== typeof obj) {
-    return false;
-  }
-
-  if (!JWKStore.isKeyStore(obj.keystore)) {
-    return false;
-  }
-
-  if ("string" !== typeof obj.kty ||
-      "number" !== typeof obj.length ||
-      "function" !== typeof obj.algorithms ||
-      "function" !== typeof obj.supports ||
-      "function" !== typeof obj.encrypt ||
-      "function" !== typeof obj.decrypt ||
-      "function" !== typeof obj.wrap ||
-      "function" !== typeof obj.unwrap ||
-      "function" !== typeof obj.sign ||
-      "function" !== typeof obj.verify) {
-    return false;
-  }
-
-  return true;
-};
-
-/**
- * Coerces the given object into a Key. If {key} is an instance of JWK.Key,
- * it is returned directly. Otherwise, this method first creates a new
- * JWK.KeyStore and calls {@link JWK.KeyStore#add} on this new KeyStore.
- *
- * @param {Object|String} key The value to coerce into a Key
- * @param {String} [form] The format of a String Key to expect
- * @param {Object} [extras] extra jwk fields inserted when importing from a non json string (eg "pem")
- * @returns {Promise(JWK.Key)} A promise for the coerced Key.
- */
-JWKStore.asKey = function(key, form, extras) {
-  if (JWKStore.isKey(key)) {
-    return Promise.resolve(key);
-  }
-
-  var ks = JWKStore.createKeyStore();
-  key = ks.add(key, form, extras);
-
-  return key;
-};
-
-module.exports = {
-  KeyRegistry: JWKRegistry,
-  KeyStore: JWKStore,
-  registry: GLOBAL_REGISTRY
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge":103,"../util":128,"../util/merge":129,"./basekey.js":110,"./helpers.js":113,"buffer":140,"lodash.clone":27}],116:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwk/octkey.js - Symmetric Octet Key Representation
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var util = require("../util");
-
-var JWK = {
-  BaseKey: require("./basekey.js"),
-  helpers: require("./helpers.js")
-};
-
-var SIG_ALGS = [
-  "HS256",
-  "HS384",
-  "HS512"
-];
-var ENC_ALGS = [
-  "A128GCM",
-  "A192GCM",
-  "A256GCM",
-  "A128CBC-HS256",
-  "A192CBC-HS384",
-  "A256CBC-HS512",
-  "A128CBC+HS256",
-  "A192CBC+HS384",
-  "A256CBC+HS512"
-];
-var WRAP_ALGS = [
-  "A128KW",
-  "A192KW",
-  "A256KW",
-  "A128GCMKW",
-  "A192GCMKW",
-  "A256GCMKW",
-  "PBES2-HS256+A128KW",
-  "PBES2-HS384+A192KW",
-  "PBES2-HS512+A256KW",
-  "dir"
-];
-
-function adjustDecryptProps(alg, props) {
-  if ("iv" in props) {
-    props.iv = Buffer.isBuffer(props.iv) ?
-               props.iv :
-               util.base64url.decode(props.iv || "");
-  }
-  if ("adata" in props) {
-    props.adata = Buffer.isBuffer(props.adata) ?
-                  props.adata :
-                  new Buffer(props.adata || "", "utf8");
-  }
-  if ("mac" in props) {
-    props.mac = Buffer.isBuffer(props.mac) ?
-                props.mac :
-                util.base64url.decode(props.mac || "");
-  }
-  if ("tag" in props) {
-    props.tag = Buffer.isBuffer(props.tag) ?
-                props.tag :
-                util.base64url.decode(props.tag || "");
-  }
-
-  return props;
-}
-function adjustEncryptProps(alg, props) {
-  if ("iv" in props) {
-    props.iv = Buffer.isBuffer(props.iv) ?
-               props.iv :
-               util.base64url.decode(props.iv || "");
-  }
-  if ("adata" in props) {
-    props.adata = Buffer.isBuffer(props.adata) ?
-                  props.adata :
-                  new Buffer(props.adata || "", "utf8");
-  }
-
-  return props;
-}
-
-var JWKOctetCfg = {
-  publicKey: function(props) {
-    var fields = JWK.helpers.COMMON_PROPS.concat([
-    ]);
-
-    var pk;
-    pk = JWK.helpers.unpackProps(props, fields);
-
-    return pk;
-  },
-  privateKey: function(props) {
-    var fields = JWK.helpers.COMMON_PROPS.concat([
-      {name: "k", type: "binary"}
-    ]);
-
-    var pk;
-    pk = JWK.helpers.unpackProps(props, fields);
-    if (pk && pk.k) {
-      pk.length = pk.k.length * 8;
-    } else {
-      pk = undefined;
-    }
-
-    return pk;
-  },
-
-  thumbprint: function(json) {
-    if (json.private) {
-      json = json.private;
-    }
-    var fields;
-    fields = {
-      k: json.k || "",
-      kty: "oct"
-    };
-    return fields;
-  },
-  algorithms: function(keys, mode) {
-    var len = keys.private && (keys.private.k.length * 8);
-    var mins = [256, 384, 512];
-
-    if (!len) {
-      return [];
-    }
-    switch (mode) {
-      case "encrypt":
-      case "decrypt":
-        return ENC_ALGS.filter(function(a) {
-          return (a === ("A" + (len / 2) + "CBC-HS" + len)) ||
-                 (a === ("A" + (len / 2) + "CBC+HS" + len)) ||
-                 (a === ("A" + len + "GCM"));
-        });
-      case "sign":
-      case "verify":
-        // TODO: allow for HS{less-than-keysize}
-        return SIG_ALGS.filter(function(a) {
-          var result = false;
-          mins.forEach(function(m) {
-            if (m > len) { return; }
-            result = result | (a === ("HS" + m));
-          });
-          return result;
-        });
-      case "wrap":
-      case "unwrap":
-        return WRAP_ALGS.filter(function(a) {
-          return (a === ("A" + len + "KW")) ||
-                 (a === ("A" + len + "GCMKW")) ||
-                 (a.indexOf("PBES2-") === 0) ||
-                 (a === "dir");
-        });
-    }
-
-    return [];
-  },
-  encryptKey: function(alg, keys) {
-    return keys.private && keys.private.k;
-  },
-  encryptProps: adjustEncryptProps,
-
-  decryptKey: function(alg, keys) {
-    return keys.private && keys.private.k;
-  },
-  decryptProps: adjustDecryptProps,
-
-  wrapKey: function(alg, keys) {
-    return keys.private && keys.private.k;
-  },
-  wrapProps: adjustEncryptProps,
-
-  unwrapKey: function(alg, keys) {
-    return keys.private && keys.private.k;
-  },
-  unwrapProps: adjustDecryptProps,
-
-  signKey: function(alg, keys) {
-    return keys.private && keys.private.k;
-  },
-  verifyKey: function(alg, keys) {
-    return keys.private && keys.private.k;
-  }
-};
-
-// Factory
-var JWKOctetFactory = {
-  kty: "oct",
-  prepare: function(props) {
-    // TODO: validate key properties
-    var cfg = JWKOctetCfg;
-    var p = Promise.resolve(props);
-    p = p.then(function(json) {
-      return JWK.helpers.thumbprint(cfg, json);
-    });
-    p = p.then(function(hash) {
-      var prints = {};
-      prints[JWK.helpers.INTERNALS.THUMBPRINT_HASH] = hash;
-      props[JWK.helpers.INTERNALS.THUMBPRINT_KEY] = prints;
-      return cfg;
-    });
-    return p;
-  },
-  generate: function(size) {
-    // TODO: validate key sizes
-    var key = util.randomBytes(size / 8);
-
-    return Promise.resolve({
-      k: key
-    });
-  }
-};
-
-// public API
-module.exports = Object.freeze({
-  config: JWKOctetCfg,
-  factory: JWKOctetFactory
-});
-
-// registration
-(function(REGISTRY) {
-  REGISTRY.register(JWKOctetFactory);
-})(require("./keystore").registry);
-
-}).call(this,require("buffer").Buffer)
-},{"../util":128,"./basekey.js":110,"./helpers.js":113,"./keystore":115,"buffer":140}],117:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jwk/rsa.js - RSA Key Representation
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var forge = require("../deps/forge.js"),
-    rsau = require("../algorithms/rsa-util");
-
-var JWK = {
-  BaseKey: require("./basekey.js"),
-  helpers: require("./helpers.js")
-};
-
-var SIG_ALGS = [
-  "RS256",
-  "RS384",
-  "RS512",
-  "PS256",
-  "PS384",
-  "PS512"
-];
-var WRAP_ALGS = [
-  "RSA-OAEP",
-  "RSA-OAEP-256",
-  "RSA1_5"
-];
-
-var JWKRsaCfg = {
-  publicKey: function(props) {
-    var fields = JWK.helpers.COMMON_PROPS.concat([
-      {name: "n", type: "binary"},
-      {name: "e", type: "binary"}
-    ]);
-    var pk;
-    pk = JWK.helpers.unpackProps(props, fields);
-    if (pk && pk.n && pk.e) {
-      pk.length = pk.n.length * 8;
-    } else {
-      delete pk.e;
-      delete pk.n;
-    }
-
-    return pk;
-  },
-  privateKey: function(props) {
-    var fields = JWK.helpers.COMMON_PROPS.concat([
-      {name: "n", type: "binary"},
-      {name: "e", type: "binary"},
-      {name: "d", type: "binary"},
-      {name: "p", type: "binary"},
-      {name: "q", type: "binary"},
-      {name: "dp", type: "binary"},
-      {name: "dq", type: "binary"},
-      {name: "qi", type: "binary"}
-    ]);
-
-    var pk;
-    pk = JWK.helpers.unpackProps(props, fields);
-    if (pk && pk.d && pk.n && pk.e && pk.p && pk.q && pk.dp && pk.dq && pk.qi) {
-      pk.length = pk.d.length * 8;
-    } else {
-      pk = undefined;
-    }
-
-    return pk;
-  },
-  thumbprint: function(json) {
-    if (json.public) {
-      json = json.public;
-    }
-    var fields = {
-      e: json.e,
-      kty: "RSA",
-      n: json.n
-    };
-    return fields;
-  },
-  algorithms: function(keys, mode) {
-    switch (mode) {
-    case "encrypt":
-    case "decrypt":
-      return [];
-    case "wrap":
-      return (keys.public && WRAP_ALGS.slice()) || [];
-    case "unwrap":
-      return (keys.private && WRAP_ALGS.slice()) || [];
-    case "sign":
-      return (keys.private && SIG_ALGS.slice()) || [];
-    case "verify":
-      return (keys.public && SIG_ALGS.slice()) || [];
-    }
-
-    return [];
-  },
-
-  wrapKey: function(alg, keys) {
-    return keys.public;
-  },
-  unwrapKey: function(alg, keys) {
-    return keys.private;
-  },
-
-  signKey: function(alg, keys) {
-    return keys.private;
-  },
-  verifyKey: function(alg, keys) {
-    return keys.public;
-  },
-
-  convertToPEM: function(key, isPrivate) {
-    var k = rsau.convertToForge(key, !isPrivate);
-    if (!isPrivate) {
-      return forge.pki.publicKeyToPem(k);
-    }
-    return forge.pki.privateKeyToPem(k);
-  }
-};
-
-function convertBNtoBuffer(bn) {
-  bn = bn.toString(16);
-  if (bn.length % 2) {
-    bn = "0" + bn;
-  }
-  return new Buffer(bn, "hex");
-}
-
-// Adapted from digitalbaazar/node-forge/js/rsa.js
-var validators = {
-  oid: "1.2.840.113549.1.1.1",
-  privateKey: {
-    name: "RSAPrivateKey",
-    tagClass: forge.asn1.Class.UNIVERSAL,
-    type: forge.asn1.Type.SEQUENCE,
-    constructed: true,
-    value: [
-      {
-        // Version (INTEGER)
-        name: "RSAPrivateKey.version",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "version"
-      },
-      {
-        // modulus (n)
-        name: "RSAPrivateKey.modulus",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "n"
-      },
-      {
-        // publicExponent (e)
-        name: "RSAPrivateKey.publicExponent",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "e"
-      },
-      {
-        // privateExponent (d)
-        name: "RSAPrivateKey.privateExponent",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "d"
-      },
-      {
-        // prime1 (p)
-        name: "RSAPrivateKey.prime1",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "p"
-      },
-      {
-        // prime2 (q)
-        name: "RSAPrivateKey.prime2",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "q"
-      },
-      {
-        // exponent1 (d mod (p-1))
-        name: "RSAPrivateKey.exponent1",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "dp"
-      },
-      {
-        // exponent2 (d mod (q-1))
-        name: "RSAPrivateKey.exponent2",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "dq"
-      },
-      {
-        // coefficient ((inverse of q) mod p)
-        name: "RSAPrivateKey.coefficient",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "qi"
-      }
-    ]
-  },
-  publicKey: {
-    // RSAPublicKey
-    name: "RSAPublicKey",
-    tagClass: forge.asn1.Class.UNIVERSAL,
-    type: forge.asn1.Type.SEQUENCE,
-    constructed: true,
-    value: [
-      {
-        // modulus (n)
-        name: "RSAPublicKey.modulus",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "n"
-      },
-      {
-        // publicExponent (e)
-        name: "RSAPublicKey.exponent",
-        tagClass: forge.asn1.Class.UNIVERSAL,
-        type: forge.asn1.Type.INTEGER,
-        constructed: false,
-        capture: "e"
-      }
-    ]
-  }
-};
-
-// Factory
-var JWKRsaFactory = {
-  kty: "RSA",
-  validators: validators,
-  prepare: function(props) {
-    // TODO: validate key properties
-    var cfg = JWKRsaCfg;
-    var p = Promise.resolve(props);
-    p = p.then(function(json) {
-      return JWK.helpers.thumbprint(cfg, json);
-    });
-    p = p.then(function(hash) {
-      var prints = {};
-      prints[JWK.helpers.INTERNALS.THUMBPRINT_HASH] = hash;
-      props[JWK.helpers.INTERNALS.THUMBPRINT_KEY] = prints;
-      return cfg;
-    });
-    return p;
-  },
-  generate: function(size) {
-    // TODO: validate key sizes
-    var key = forge.pki.rsa.generateKeyPair({
-      bits: size,
-      e: 0x010001
-    });
-    key = key.privateKey;
-
-    // convert to JSON-ish
-    var result = {};
-    [
-      "e",
-      "n",
-      "d",
-      "p",
-      "q",
-      {incoming: "dP", outgoing: "dp"},
-      {incoming: "dQ", outgoing: "dq"},
-      {incoming: "qInv", outgoing: "qi"}
-    ].forEach(function(f) {
-      var incoming,
-          outgoing;
-
-      if ("string" === typeof f) {
-        incoming = outgoing = f;
-      } else {
-        incoming = f.incoming;
-        outgoing = f.outgoing;
-      }
-
-      if (incoming in key) {
-        result[outgoing] = convertBNtoBuffer(key[incoming]);
-      }
-    });
-
-    return Promise.resolve(result);
-  },
-  import: function(input) {
-    if (validators.oid !== input.keyOid) {
-      return null;
-    }
-
-    if (!input.parsed) {
-      // coerce capture.keyValue to DER
-      if ("string" === typeof input.keyValue) {
-        input.keyValue = forge.asn1.fromDer(input.keyValue);
-      } else if (Array.isArray(input.keyValue)) {
-        input.keyValue = input.keyValue[0];
-      }
-      // capture key factors
-      var validator = ("private" === input.type) ?
-                      validators.privateKey :
-                      validators.publicKey;
-      var capture = {},
-          errors = [];
-      if (!forge.asn1.validate(input.keyValue, validator, capture, errors)) {
-        return null;
-      }
-      input = capture;
-    }
-
-    // convert factors to Buffers
-    var output = {
-      kty: "RSA"
-    };
-    ["n", "e", "d", "p", "q", "dp", "dq", "qi"].forEach(function(f) {
-      if (!(f in input)) {
-        return;
-      }
-      var b = new Buffer(input[f], "binary");
-      // remove leading zero padding if any
-      if (0 === b[0]) {
-        b = b.slice(1);
-      }
-      output[f] = b;
-    });
-    return output;
-  }
-};
-
-// public API
-module.exports = Object.freeze({
-  config: JWKRsaCfg,
-  factory: JWKRsaFactory
-});
-
-// registration
-(function(REGISTRY) {
-  REGISTRY.register(JWKRsaFactory);
-})(require("./keystore").registry);
-
-}).call(this,require("buffer").Buffer)
-},{"../algorithms/rsa-util":91,"../deps/forge.js":103,"./basekey.js":110,"./helpers.js":113,"./keystore":115,"buffer":140}],118:[function(require,module,exports){
-/*!
- * jws/defaults.js - Defaults for JWSs
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-/**
- * @description
- * The default options for {@link JWS.createSign}.
- *
- * @property {Boolean} compact Determines if the output is the Compact
- *           serialization (`true`) or the JSON serialization (**`false`**,
- *           the default).
- * @property {String|String[]} protect The names of the headers to integrity
- *           protect.  The value `""` means that none of header parameters
- *           are integrity protected, while `"*"` (the default) means that all
- *           headers parameter sare integrity protected.
- */
-var JWSDefaults = {
-    compact: false,
-    protect: "*"
-};
-
-module.exports = JWSDefaults;
-
-},{}],119:[function(require,module,exports){
-/*!
- * jws/helpers.js - JWS Internal Helper Functions
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-module.exports = {
-  slice: function(input, start) {
-    return Array.prototype.slice.call(input, start || 0);
-  }
-};
-
-},{}],120:[function(require,module,exports){
-/*!
- * jws/index.js - JSON Web Signature (JWS) Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var JWS = {
-  createSign: require("./sign").createSign,
-  createVerify: require("./verify").createVerify
-};
-
-module.exports = JWS;
-
-},{"./sign":121,"./verify":122}],121:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jws/sign.js - Sign to JWS
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var clone = require("lodash.clone"),
-    merge = require("../util/merge"),
-    uniq = require("lodash.uniq"),
-    util = require("../util"),
-    JWK = require("../jwk"),
-    slice = require("./helpers").slice;
-
-var DEFAULTS = require("./defaults");
-
-/**
- * @class JWS.Signer
- * @classdesc Generator of signed content.
- *
- * @description
- * **NOTE:** this class cannot be instantiated directly. Instead call {@link
- * JWS.createSign}.
- */
-var JWSSigner = function(cfg, signatories) {
-  var finalized = false,
-      format = cfg.format || "general",
-      content = new Buffer(0);
-
-  /**
-  * @member {Boolean} JWS.Signer#compact
-  * @description
-  * Indicates whether the outuput of this signature generator is using
-  * the Compact serialization (`true`) or the JSON serialization
-  * (`false`).
-  */
-  Object.defineProperty(this, "compact", {
-    get: function() {
-      return "compact" === format;
-    },
-    enumerable: true
-  });
-  Object.defineProperty(this, "format", {
-    get: function() {
-      return format;
-    },
-    enumerable: true
-  });
-
-  /**
-  * @method JWS.Signer#update
-  * @description
-  * Updates the signing content for this signature content. The content
-  * is appended to the end of any other content already applied.
-  *
-  * If {data} is a Buffer, {encoding} is ignored. Otherwise, {data} is
-  * converted to a Buffer internally to {encoding}.
-  *
-  * @param {Buffer|String} data The data to sign.
-  * @param {String} [encoding="binary"] The encoding of {data}.
-  * @returns {JWS.Signer} This signature generator.
-  * @throws {Error} If a signature has already been generated.
-  */
-  Object.defineProperty(this, "update", {
-    value: function(data, encoding) {
-      if (finalized) {
-        throw new Error("already final");
-      }
-      if (data != null) {
-        data = util.asBuffer(data, encoding);
-        if (content.length) {
-          content = Buffer.concat([content, data],
-                      content.length + data.length);
-        } else {
-          content = data;
-        }
-      }
-
-      return this;
-    }
-  });
-  /**
-  * @method JWS.Signer#final
-  * @description
-  * Finishes the signature operation.
-  *
-  * The returned Promise, when fulfilled, is the JSON Web Signature (JWS)
-  * object, either in the Compact (if {@link JWS.Signer#format} is
-  * `"compact"`), the flattened JSON (if {@link JWS.Signer#format} is
-  * "flattened"), or the general JSON serialization.
-  *
-  * @param {Buffer|String} [data] The final content to apply.
-  * @param {String} [encoding="binary"] The encoding of the final content
-  *        (if any).
-  * @returns {Promise} The promise for the signatures
-  * @throws {Error} If a signature has already been generated.
-  */
-  Object.defineProperty(this, "final", {
-    value: function(data, encoding) {
-      if (finalized) {
-        throw new Error("already final");
-      }
-
-      // last-minute data
-      this.update(data, encoding);
-
-      // mark as done...ish
-      finalized = true;
-      var promise;
-
-      // map signatory promises to just signatories
-      promise = Promise.all(signatories);
-      promise = promise.then(function(sigs) {
-        // prepare content
-        content = util.base64url.encode(content);
-
-        sigs = sigs.map(function(s) {
-          // prepare protected
-          var protect = {},
-              lenProtect = 0,
-              unprotect = clone(s.header),
-              lenUnprotect = Object.keys(unprotect).length;
-          s.protected.forEach(function(h) {
-            if (!(h in unprotect)) {
-              return;
-            }
-            protect[h] = unprotect[h];
-            lenProtect++;
-            delete unprotect[h];
-            lenUnprotect--;
-          });
-          if (lenProtect > 0) {
-            protect = JSON.stringify(protect);
-            protect = util.base64url.encode(protect);
-          } else {
-            protect = "";
-          }
-
-          // signit!
-          var data = new Buffer(protect + "." + content, "ascii");
-          s = s.key.sign(s.header.alg, data, s.header);
-          s = s.then(function(result) {
-            var sig = {};
-            if (0 < lenProtect) {
-              sig.protected = protect;
-            }
-            if (0 < lenUnprotect) {
-              sig.unprotected = unprotect;
-            }
-            sig.signature = util.base64url.encode(result.mac);
-            return sig;
-          });
-          return s;
-        });
-        sigs = [Promise.resolve(content)].concat(sigs);
-        return Promise.all(sigs);
-      });
-      promise = promise.then(function(results) {
-        var content = results[0];
-        return {
-          payload: content,
-          signatures: results.slice(1)
-        };
-      });
-      switch (format) {
-        case "compact":
-          promise = promise.then(function(jws) {
-            var compact = [
-              jws.signatures[0].protected,
-              jws.payload,
-              jws.signatures[0].signature
-            ];
-            compact = compact.join(".");
-            return compact;
-          });
-          break;
-        case "flattened":
-          promise = promise.then(function(jws) {
-            var flattened = {};
-            flattened.payload = jws.payload;
-
-            var sig = jws.signatures[0];
-            if (sig.protected) {
-              flattened.protected = sig.protected;
-            }
-            if (sig.header) {
-              flattened.header = sig.header;
-            }
-            flattened.signature = sig.signature;
-
-            return flattened;
-          });
-          break;
-      }
-
-      return promise;
-    }
-  });
-};
-
-
-/**
- * @description
- * Creates a new JWS.Signer with the given options and signatories.
- *
- * @param {Object} [opts] The signing options
- * @param {Boolean} [opts.compact] Use compact serialization?
- * @param {String} [opts.format] The serialization format to use ("compact",
- *                 "flattened", "general")
- * @param {Object} [opts.fields] Additional header fields
- * @param {JWK.Key[]|Object[]} [signs] Signatories, either as an array of
- *        JWK.Key instances; or an array of objects, each with the following
- *        properties
- * @param {JWK.Key} signs.key Key used to sign content
- * @param {Object} [signs.header] Per-signatory header fields
- * @param {String} [signs.reference] Reference field to identify the key
- * @param {String[]|String} [signs.protect] List of fields to integrity
- *        protect ("*" to protect all fields)
- * @returns {JWS.Signer} The signature generator.
- * @throws {Error} If Compact serialization is requested but there are
- *         multiple signatories
- */
-function createSign(opts, signs) {
-  // fixup signatories
-  var options = opts,
-      signStart = 1,
-      signList = signs;
-
-  if (arguments.length === 0) {
-    throw new Error("at least one signatory must be provided");
-  }
-  if (arguments.length === 1) {
-    signList = opts;
-    signStart = 0;
-    options = {};
-  } else if (JWK.isKey(opts) ||
-            (opts && "kty" in opts) ||
-            (opts && "key" in opts &&
-            (JWK.isKey(opts.key) || "kty" in opts.key))) {
-    signList = opts;
-    signStart = 0;
-    options = {};
-  } else {
-    options = clone(opts);
-  }
-  if (!Array.isArray(signList)) {
-    signList = slice(arguments, signStart);
-  }
-
-  // fixup options
-  options = merge(clone(DEFAULTS), options);
-
-  // setup header fields
-  var allFields = options.fields || {};
-  // setup serialization format
-  var format = options.format;
-  if (!format) {
-    format = options.compact ? "compact" : "general";
-  }
-  if (("compact" === format || "flattened" === format) && 1 < signList.length) {
-    throw new Error("too many signatories for compact or flattened JSON serialization");
-  }
-
-  // note protected fields (globally)
-  // protected fields are per signature
-  var protectAll = ("*" === options.protect);
-  if (options.compact) {
-    protectAll = true;
-  }
-
-  signList = signList.map(function(s, idx) {
-    var p;
-
-    // resolve a key
-    if (s && "kty" in s) {
-      p = JWK.asKey(s);
-      p = p.then(function(k) {
-        return {
-          key: k
-        };
-      });
-    } else if (s) {
-      p = JWK.asKey(s.key);
-      p = p.then(function(k) {
-        return {
-          header: s.header,
-          reference: s.reference,
-          protect: s.protect,
-          key: k
-        };
-      });
-    } else {
-      p = Promise.reject(new Error("missing key for signatory " + idx));
-    }
-
-    // resolve the complete signatory
-    p = p.then(function(signatory) {
-      var key = signatory.key;
-
-      // make sure there is a header
-      var header = signatory.header || {};
-      header = merge(merge({}, allFields), header);
-      signatory.header = header;
-
-      // ensure an algorithm
-      if (!header.alg) {
-        header.alg = key.algorithms(JWK.MODE_SIGN)[0] || "";
-      }
-
-      // determine the key reference
-      var ref = signatory.reference;
-      delete signatory.reference;
-      if (undefined === ref) {
-        // header already contains the key reference
-        ref = ["kid", "jku", "x5c", "x5t", "x5u"].some(function(k) {
-          return (k in header);
-        });
-        ref = !ref ? "kid" : null;
-      } else if ("boolean" === typeof ref) {
-        // explicit (positive | negative) request for key reference
-        ref = ref ? "kid" : null;
-      }
-      var jwk;
-      if (ref) {
-        jwk = key.toJSON();
-        if ("jwk" === ref) {
-          header.jwk = jwk;
-        } else if (ref in jwk) {
-          header[ref] = jwk[ref];
-        }
-      }
-
-      // determine protected fields
-      var protect = signatory.protect;
-      if (protectAll || "*" === protect) {
-        protect = Object.keys(header);
-      } else if ("string" === protect) {
-        protect = [protect];
-      } else if (Array.isArray(protect)) {
-        protect = protect.concat();
-      } else if (!protect) {
-        protect = [];
-      } else {
-        return Promise.reject(new Error("protect must be a list of fields"));
-      }
-      protect = uniq(protect);
-      signatory.protected = protect;
-
-      // freeze signatory
-      signatory = Object.freeze(signatory);
-      return signatory;
-    });
-
-    return p;
-  });
-
-  var cfg = {
-    format: format
-  };
-  return new JWSSigner(cfg,
-                       signList);
-}
-
-module.exports = {
-  signer: JWSSigner,
-  createSign: createSign
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../jwk":114,"../util":128,"../util/merge":129,"./defaults":118,"./helpers":119,"buffer":140,"lodash.clone":27,"lodash.uniq":44}],122:[function(require,module,exports){
-(function (Buffer){
-/*!
- * jws/verify.js - Verifies from a JWS
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var clone = require("lodash.clone"),
-    merge = require("../util/merge"),
-    base64url = require("../util/base64url"),
-    JWK = require("../jwk");
-
-/**
- * @class JWS.Verifier
- * @classdesc Parser of signed content.
- *
- * @description
- * **NOTE:** this class cannot be instantiated directly. Instead call {@link
- * JWS.createVerify}.
- */
-var JWSVerifier = function(ks) {
-  var assumedKey,
-      keystore;
-
-  if (JWK.isKey(ks)) {
-      assumedKey = ks;
-      keystore = assumedKey.keystore;
-  } else if (JWK.isKeyStore(ks)) {
-      keystore = ks;
-  } else {
-      throw new TypeError("Keystore must be provided");
-  }
-
-  Object.defineProperty(this, "verify", {
-    value: function(input) {
-      if ("string" === typeof input) {
-        input = input.split(".");
-        input = {
-          payload: input[1],
-          signatures: [
-            {
-              protected: input[0],
-              signature: input[2]
-            }
-          ]
-        };
-      } else if (!input || "object" === input) {
-        throw new Error("invalid input");
-      }
-
-      // fixup "flattened JSON" to look like "general JSON"
-      if (input.signature) {
-        input.signatures = [
-          {
-            protected: input.protected || undefined,
-            header: input.header || undefined,
-            signature: input.signature
-          }
-        ];
-      }
-
-      // ensure signatories exists
-      var sigList = input.signatures || [{}];
-
-      // combine fields and decode signature per signatory
-      sigList = sigList.map(function(s) {
-        var header = clone(s.header || {});
-        var protect = s.protected ?
-                      JSON.parse(base64url.decode(s.protected, "utf8")) :
-                      {};
-        header = merge(header, protect);
-        var signature = base64url.decode(s.signature);
-
-        return {
-          protected: s.protected,
-          header: header,
-          signature: signature
-        };
-      });
-
-      var promise = new Promise(function(resolve, reject) {
-        var processSig = function() {
-          var sig = sigList.shift();
-          if (!sig) {
-            reject(new Error("no key found"));
-            return;
-          }
-
-          var content = new Buffer((sig.protected || "") + "." + input.payload, "ascii");
-
-          var algPromise,
-              algKey = assumedKey || keystore.get({
-            use: "sig",
-            alg: sig.header.alg,
-            kid: sig.header.kid
-          });
-          if (algKey) {
-            algPromise = algKey.verify(sig.header.alg,
-                                       content,
-                                       sig.signature);
-          } else {
-            algPromise = Promise.reject("key does not match");
-          }
-          algPromise = algPromise.then(function(result) {
-            var payload = result.data.toString("ascii");
-            payload = payload.split(".")[1];
-            payload = base64url.decode(payload);
-            var jws = {
-              header: sig.header,
-              payload: payload,
-              signature: result.mac,
-              key: algKey
-            };
-            resolve(jws);
-          }, processSig);
-        };
-        processSig();
-      });
-
-      return promise;
-    }
-  });
-};
-
-/**
- * @description
- * Creates a new JWS.Verifier with the given Key or KeyStore.
- *
- * @param {JWK.Key|JWK.KeyStore} ks The Key or KeyStore to use for verification.
- * @returns {JWS.Verifier} The new Verifier.
- */
-function createVerify(ks) {
-  var vfy = new JWSVerifier(ks);
-
-  return vfy;
-}
-
-module.exports = {
-  verifier: JWSVerifier,
-  createVerify: createVerify
-};
-
-}).call(this,require("buffer").Buffer)
-},{"../jwk":114,"../util/base64url":126,"../util/merge":129,"buffer":140,"lodash.clone":27}],123:[function(require,module,exports){
-/*!
- * parse/compact.js - JOSE Compact Serialization Parser
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var jose = {
-  JWE: require("../jwe"),
-  JWS: require("../jws"),
-  util: require("../util")
-};
-
-function parseCompact(input) {
-  var parts = input.split(".");
-
-  var type,
-      op;
-  if (3 === parts.length) {
-    // JWS
-    type = "JWS";
-    op = function(ks) {
-      return jose.JWS.createVerify(ks).
-             verify(input);
-    };
-  } else if (5 === parts.length) {
-    // JWE
-    type = "JWE";
-    op = function(ks) {
-      return jose.JWE.createDecrypt(ks).
-             decrypt(input);
-    };
-  } else {
-    throw new TypeError("invalid jose serialization");
-  }
-
-  // parse header
-  var header;
-  header = jose.util.base64url.decode(parts[0], "utf8");
-  header = JSON.parse(header);
-  return {
-    type: type,
-    format: "compact",
-    input: input,
-    header: header,
-    perform: op
-  };
-}
-
-module.exports = parseCompact;
-
-},{"../jwe":109,"../jws":120,"../util":128}],124:[function(require,module,exports){
-(function (Buffer){
-/*!
- * parse/index.js - JOSE Parser Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var compact = require("./compact"),
-    json = require("./json");
-
-var parse = module.exports = function(input) {
-  if (Buffer.isBuffer(input)) {
-    // assume buffer holds a Compact Serialization string
-    return compact(input.toString("ascii"));
-  } else if ("string" === typeof input) {
-    return compact(input);
-  } else if (input) {
-    return json(input);
-  } else {
-    throw new TypeError("invalid input");
-  }
-};
-
-parse.compact = compact;
-parse.json = json;
-
-}).call(this,{"isBuffer":require("../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js")})
-},{"../../../../../../../../usr/local/lib/node_modules/browserify/node_modules/is-buffer/index.js":146,"./compact":123,"./json":125}],125:[function(require,module,exports){
-/*!
- * parse/compact.js - JOSE JSON Serialization Parser
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var merge = require("../util/merge");
-
-var jose = {
-  JWE: require("../jwe"),
-  JWS: require("../jws"),
-  util: require("../util")
-};
-
-function parseJSON(input) {
-  var type,
-      op,
-      headers;
-
-  if ("signatures" in input || "signature" in input) {
-    // JWS
-    type = "JWS";
-    op = function(ks) {
-      return jose.JWS.createVerify(ks).
-             verify(input);
-    };
-    // headers can be (signatures[].protected, signatures[].header, signature.protected, signature.header)
-    headers = input.signatures ||
-              [ {
-                protected: input.protected,
-                header: input.header,
-                signature: input.signature
-              }];
-    headers = headers.map(function(sig) {
-      var all = {};
-      if (sig.header) {
-        all = merge(all, sig.header);
-      }
-
-      var prot;
-      if (sig.protected) {
-        prot = sig.protected;
-        prot = jose.util.base64url.decode(prot, "utf8");
-        prot = JSON.parse(prot);
-        all = merge(all, prot);
-      }
-
-      return all;
-    });
-  } else if ("ciphertext" in input) {
-    // JWE
-    type = "JWE";
-    op = function(ks) {
-      return jose.JWE.createDecrypt(ks).
-             decrypt(input);
-    };
-    // headers can be (protected, unprotected, recipients[].header)
-    var root = {};
-    if (input.protected) {
-      root.protected = input.protected;
-      root.protected = jose.util.base64url.decode(root.protected, "utf8");
-      root.protected = JSON.parse(root.protected);
-    }
-    if (input.unprotected) {
-      root.unprotected = input.unprotected;
-    }
-
-    headers = input.recipients || [{}];
-    headers = headers.map(function(rcpt) {
-      var all = {};
-      if (rcpt.header) {
-        all = merge(all, rcpt.header);
-      }
-      if (root.unprotected) {
-        all = merge(all, root.unprotected);
-      }
-      if (root.protected) {
-        all = merge(all, root.protected);
-      }
-
-      return all;
-    });
-  }
-
-  return {
-    type: type,
-    format: "json",
-    input: input,
-    all: headers,
-    perform: op
-  };
-}
-
-module.exports = parseJSON;
-
-},{"../jwe":109,"../jws":120,"../util":128,"../util/merge":129}],126:[function(require,module,exports){
-/*!
- * util/base64url.js - Implementation of web-safe Base64 Encoder/Decoder
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var impl = require("urlsafe-base64");
-
-/**
- * @namespace base64url
- * @description
- * Provides methods to encode and decode data according to the
- * base64url alphabet.
- */
-var base64url = {
-  /**
-   * @function
-   * Encodes the input to base64url.
-   *
-   * If {input} is a Buffer, then {encoding} is ignored. Otherwise,
-   * {encoding} can be one of "binary", "base64", "hex", "utf8".
-   *
-   * @param {Buffer|String} input The data to encode.
-   * @param {String} [encoding = binary] The input encoding format.
-   * @returns {String} the base64url encoding of {input}.
-   */
-  encode: impl.encode,
-  /**
-   * @function
-   * Decodes the input from base64url.
-   *
-   * @param {String} input The data to decode.
-   * @returns {Buffer|String} the base64url decoding of {input}.
-   */
-  decode: impl.decode
-};
-
-module.exports = base64url;
-
-},{"urlsafe-base64":131}],127:[function(require,module,exports){
-(function (Buffer){
-/*!
- * util/databuffer.js - Forge-compatible Buffer based on Node.js Buffers
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var forge = require("../deps/forge.js"),
-    base64url = require("./base64url.js");
-
-/**
- *
- */
-function DataBuffer(b, options) {
-  options = options || {};
-
-  // treat (views of) (Array)Buffers special
-  // NOTE: default implementation creates copies, but efficiently
-  //       wherever possible
-  if (Buffer.isBuffer(b)) {
-    this.data = b;
-  } else if (forge.util.isArrayBuffer(b)) {
-    b = new Uint8Array(b);
-    this.data = new Buffer(b);
-  } else if (forge.util.isArrayBufferView(b)) {
-    b = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-    this.data = new Buffer(b);
-  }
-
-  if (this.data) {
-    this.write = this.data.length;
-    b = undefined;
-  }
-
-  // setup growth rate
-  this.growSize = options.growSize || DataBuffer.DEFAULT_GROW_SIZE;
-
-  // initialize pointers and data
-  this.write = this.write || 0;
-  this.read = this.read || 0;
-  if (b) {
-    this.putBytes(b);
-  } else if (!this.data) {
-    this.accommodate(0);
-  }
-
-  // massage read/write pointers
-  options.readOffset = ("readOffset" in options) ?
-                       options.readOffset :
-                       this.read;
-  this.write = ("writeOffset" in options) ?
-               options.writeOffset :
-               this.write;
-  this.read = Math.min(options.readOffset, this.write);
-}
-DataBuffer.DEFAULT_GROW_SIZE = 16;
-
-DataBuffer.prototype.length = function() {
-  return this.write - this.read;
-};
-DataBuffer.prototype.available = function() {
-  return this.data.length - this.write;
-};
-DataBuffer.prototype.isEmpty = function() {
-  return this.length() <= 0;
-};
-
-DataBuffer.prototype.accommodate = function(length) {
-  if (!this.data) {
-    // initializes a new buffer
-    length = Math.max(this.write + length, this.growSize);
-
-    this.data = new Buffer(length);
-  } else if (this.available() < length) {
-    length = Math.max(length, this.growSize);
-
-    // create a new empty buffer, and copy current one into it
-    var src = this.data;
-    var dst = new Buffer(src.length + length);
-    src.copy(dst, 0);
-
-    // set data as the new buffer
-    this.data = dst;
-  }
-  // ensure the rest is 0
-  this.data.fill(0, this.write);
-
-  return this;
-};
-DataBuffer.prototype.clear = function() {
-  this.read = this.write = 0;
-  this.data = new Buffer(0);
-  return this;
-};
-DataBuffer.prototype.truncate = function(count) {
-  // chop off <count> bytes from the end
-  this.write = this.read + Math.max(0, this.length() - count);
-  // ensure the remainder is 0
-  this.data.fill(0, this.write);
-  return this;
-};
-DataBuffer.prototype.compact = function() {
-  if (this.read > 0) {
-    if (this.write === this.read) {
-      this.read = this.write = 0;
-    } else {
-      this.data.copy(this.data, 0, this.read, this.write);
-      this.write = this.write - this.read;
-      this.read = 0;
-    }
-    // ensure remainder is 0
-    this.data.fill(0, this.write);
-  }
-  return this;
-};
-DataBuffer.prototype.copy = function() {
-  return new DataBuffer(this, {
-    readOffset: this.read,
-    writeOffset: this.write,
-    growSize: this.growSize
-  });
-};
-
-DataBuffer.prototype.equals = function(test) {
-  if (!DataBuffer.isBuffer(test)) {
-    return false;
-  }
-
-  if (test.length() !== this.length()) {
-    return false;
-  }
-
-  var rval = true,
-      delta = this.read - test.read;
-  // constant time
-  for (var idx = test.read; test.write > idx; idx++) {
-    rval = rval && (this.data[idx + delta] === test.data[idx]);
-  }
-  return rval;
-};
-DataBuffer.prototype.at = function(idx) {
-  return this.data[this.read + idx];
-};
-DataBuffer.prototype.setAt = function(idx, b) {
-  this.data[this.read + idx] = b;
-  return this;
-};
-DataBuffer.prototype.last = function() {
-  return this.data[this.write - 1];
-};
-DataBuffer.prototype.bytes = function(count) {
-  var rval;
-  if (undefined === count) {
-    count = this.length();
-  } else if (count) {
-    count = Math.min(count, this.length());
-  }
-
-  if (0 === count) {
-    rval = "";
-  } else {
-    var begin = this.read,
-        end = begin + count,
-        data = this.data.slice(begin, end);
-    rval = String.fromCharCode.apply(null, data);
-  }
-
-  return rval;
-};
-DataBuffer.prototype.buffer = function(count) {
-  var rval;
-  if (undefined === count) {
-    count = this.length();
-  } else if (count) {
-    count = Math.min(count, this.length());
-  }
-
-  if (0 === count) {
-    rval = new ArrayBuffer(0);
-  } else {
-    var begin = this.read,
-        end = begin + count,
-        data = this.data.slice(begin, end);
-    rval = new Uint8Array(end - begin);
-    rval.set(data);
-  }
-
-  return rval;
-};
-DataBuffer.prototype.native = function(count) {
-  var rval;
-  if ("undefined" === typeof count) {
-    count = this.length();
-  } else if (count) {
-    count = Math.min(count, this.length());
-  }
-
-  if (0 === count) {
-    rval = new Buffer(0);
-  } else {
-    var begin = this.read,
-        end = begin + count;
-    rval = this.data.slice(begin, end);
-  }
-
-  return rval;
-};
-
-DataBuffer.prototype.toHex = function() {
-  return this.toString("hex");
-};
-DataBuffer.prototype.toString = function(encoding) {
-  // short circuit empty string
-  if (0 === this.length()) {
-    return "";
-  }
-
-  var view = this.data.slice(this.read, this.write);
-  encoding = encoding || "utf8";
-  // special cases, then built-in support
-  switch (encoding) {
-    case "raw":
-      return view.toString("binary");
-    case "base64url":
-      return base64url.encode(view);
-    case "utf16":
-      return view.toString("ucs2");
-    default:
-      return view.toString(encoding);
-  }
-};
-
-DataBuffer.prototype.fillWithByte = function(b, n) {
-  if (!n) {
-    n = this.available();
-  }
-  this.accommodate(n);
-  this.data.fill(b, this.write, this.write + n);
-  this.write += n;
-
-  return this;
-};
-
-DataBuffer.prototype.getBuffer = function(count) {
-  var rval = this.buffer(count);
-  this.read += rval.byteLength;
-
-  return rval;
-};
-DataBuffer.prototype.putBuffer = function(bytes) {
-  return this.putBytes(bytes);
-};
-
-DataBuffer.prototype.getBytes = function(count) {
-  var rval = this.bytes(count);
-  this.read += rval.length;
-  return rval;
-};
-DataBuffer.prototype.putBytes = function(bytes, encoding) {
-  function augmentIt(src) {
-    return (Buffer._augment) ?
-           Buffer._augment(src) :
-           new Buffer(src);
-  }
-
-  if ("string" === typeof bytes) {
-    // fixup encoding
-    encoding = encoding || "binary";
-    switch (encoding) {
-      case "utf16":
-        // treat as UCS-2/UTF-16BE
-        encoding = "ucs-2";
-        break;
-      case "raw":
-        encoding = "binary";
-        break;
-      case "base64url":
-        // NOTE: this returns a Buffer
-        bytes = base64url.decode(bytes);
-        break;
-    }
-
-    // replace bytes with decoded Buffer (if not already)
-    if (!Buffer.isBuffer(bytes)) {
-      bytes = new Buffer(bytes, encoding);
-    }
-  }
-
-  var src, dst;
-  if (bytes instanceof DataBuffer) {
-    // be slightly more efficient
-    var orig = bytes;
-    bytes = orig.data.slice(orig.read, orig.write);
-    orig.read = orig.write;
-  } else if (bytes instanceof forge.util.ByteStringBuffer) {
-    bytes = bytes.getBytes();
-  }
-
-  // process array
-  if (Buffer.isBuffer(bytes)) {
-    src = bytes;
-  } else if (Array.isArray(bytes)) {
-    src = new Buffer(bytes);
-  } else if (forge.util.isArrayBuffer(bytes)) {
-    src = new Uint8Array(bytes);
-    src = augmentIt(src);
-  } else if (forge.util.isArrayBufferView(bytes)) {
-    src = (bytes instanceof Uint8Array) ?
-              bytes :
-              new Uint8Array(bytes.buffer,
-                             bytes.byteOffset,
-                             bytes.byteLength);
-    src = augmentIt(src);
-  } else {
-    throw new TypeError("invalid source type");
-  }
-
-  this.accommodate(src.length);
-  dst = this.data;
-  src.copy(dst, this.write);
-  this.write += src.length;
-
-  return this;
-};
-
-DataBuffer.prototype.getNative = function(count) {
-  var rval = this.native(count);
-  this.read += rval.length;
-  return rval;
-};
-DataBuffer.prototype.putNative = DataBuffer.prototype.putBuffer;
-
-DataBuffer.prototype.getByte = function() {
-  var b = this.data[this.read];
-  this.read = Math.min(this.read + 1, this.write);
-  return b;
-};
-DataBuffer.prototype.putByte = function(b) {
-  this.accommodate(1);
-  this.data[this.write] = b & 0xff;
-  this.write++;
-
-  return this;
-};
-
-DataBuffer.prototype.getInt16 = function() {
-  var n = (this.data[this.read] << 8) ^
-          (this.data[this.read + 1]);
-  this.read = Math.min(this.read + 2, this.write);
-  return n;
-};
-DataBuffer.prototype.putInt16 = function(n) {
-  this.accommodate(2);
-  this.data[this.write] = (n >>> 8) & 0xff;
-  this.data[this.write + 1] = n & 0xff;
-  this.write += 2;
-  return this;
-};
-
-DataBuffer.prototype.getInt24 = function() {
-  var n = (this.data[this.read] << 16) ^
-          (this.data[this.read + 1] << 8) ^
-          this.data[this.read + 2];
-  this.read = Math.min(this.read + 3, this.write);
-  return n;
-};
-DataBuffer.prototype.putInt24 = function(n) {
-  this.accommodate(3);
-  this.data[this.write] = (n >>> 16) & 0xff;
-  this.data[this.write + 1] = (n >>> 8) & 0xff;
-  this.data[this.write + 2] = n & 0xff;
-  this.write += 3;
-  return this;
-};
-
-DataBuffer.prototype.getInt32 = function() {
-  var n = (this.data[this.read] << 24) ^
-          (this.data[this.read + 1] << 16) ^
-          (this.data[this.read + 2] << 8) ^
-          this.data[this.read + 3];
-  this.read = Math.min(this.read + 4, this.write);
-  return n;
-};
-DataBuffer.prototype.putInt32 = function(n) {
-  this.accommodate(4);
-  this.data[this.write] = (n >>> 24) & 0xff;
-  this.data[this.write + 1] = (n >>> 16) & 0xff;
-  this.data[this.write + 2] = (n >>> 8) & 0xff;
-  this.data[this.write + 3] = n & 0xff;
-  this.write += 4;
-  return this;
-};
-
-DataBuffer.prototype.getInt16Le = function() {
-  var n = (this.data[this.read + 1] << 8) ^
-          this.data[this.read];
-  this.read = Math.min(this.read + 2, this.write);
-  return n;
-};
-DataBuffer.prototype.putInt16Le = function(n) {
-  this.accommodate(2);
-  this.data[this.write + 1] = (n >>> 8) & 0xff;
-  this.data[this.write] = n & 0xff;
-  this.write += 2;
-  return this;
-};
-
-DataBuffer.prototype.getInt24Le = function() {
-  var n = (this.data[this.read + 2] << 16) ^
-          (this.data[this.read + 1] << 8) ^
-          this.data[this.read];
-  this.read = Math.min(this.read + 3, this.write);
-  return n;
-};
-DataBuffer.prototype.putInt24Le = function(n) {
-  this.accommodate(3);
-  this.data[this.write + 2] = (n >>> 16) & 0xff;
-  this.data[this.write + 1] = (n >>> 8) & 0xff;
-  this.data[this.write] = n & 0xff;
-  this.write += 3;
-  return this;
-};
-DataBuffer.prototype.getInt32Le = function() {
-  var n = (this.data[this.read + 3] << 24) ^
-          (this.data[this.read + 2] << 16) ^
-          (this.data[this.read + 1] << 8) ^
-          this.data[this.read];
-  this.read = Math.min(this.read + 4, this.write);
-  return n;
-};
-DataBuffer.prototype.putInt32Le = function(n) {
-  this.accommodate(4);
-  this.data[this.write + 3] = (n >>> 24) & 0xff;
-  this.data[this.write + 2] = (n >>> 16) & 0xff;
-  this.data[this.write + 1] = (n >>> 8) & 0xff;
-  this.data[this.write] = n & 0xff;
-  this.write += 4;
-  return this;
-};
-
-DataBuffer.prototype.getInt = function(bits) {
-  var rval = 0;
-  do {
-    rval = (rval << 8) | this.getByte();
-    bits -= 8;
-  } while (bits > 0);
-  return rval;
-};
-DataBuffer.prototype.putInt = function(n, bits) {
-  this.accommodate(Math.ceil(bits / 8));
-  do {
-    bits -= 8;
-    this.putByte((n >> bits) & 0xff);
-  } while (bits > 0);
-  return this;
-};
-
-DataBuffer.prototype.putSignedInt = function(n, bits) {
-  if (n < 0) {
-    n += 2 << (bits - 1);
-  }
-  return this.putInt(n, bits);
-};
-
-DataBuffer.prototype.putString = function(str) {
-  return this.putBytes(str, "utf16");
-};
-
-DataBuffer.isBuffer = function(test) {
-  return (test instanceof DataBuffer);
-};
-DataBuffer.asBuffer = function(orig) {
-  return DataBuffer.isBuffer(orig) ?
-         orig :
-         orig ?
-         new DataBuffer(orig) :
-         new DataBuffer();
-};
-
-module.exports = forge.util.ByteBuffer = DataBuffer;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"./base64url.js":126,"buffer":140}],128:[function(require,module,exports){
-(function (Buffer){
-/*!
- * util/index.js - Utilities Entry Point
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var forge = require("../deps/forge.js");
-
-var util;
-
-function asBuffer(input, encoding) {
-  if (Buffer.isBuffer(input)) {
-    return input;
-  }
-
-  if ("string" === typeof input) {
-    encoding = encoding || "binary";
-    if ("base64url" === encoding) {
-      return util.base64url.decode(input);
-    }
-    return new Buffer(input, encoding);
-  }
-
-  // assume input is an Array, ArrayBuffer, or ArrayBufferView
-  if (forge.util.isArrayBufferView(input)) {
-    input = (input instanceof Uint8Array) ?
-            input :
-            new Uint8Array(input.buffer, input.byteOffset, input.byteOffset + input.byteLength);
-  } else if (forge.util.isArrayBuffer(input)) {
-    input = new Uint8Array(input);
-  }
-
-  var output;
-  if ("function" === typeof Buffer._augment) {
-    // web environments -- try to be efficient with memory
-    if (!(input instanceof Uint8Array)) {
-      input = new Uint8Array(input);
-    }
-    output = Buffer._augment(input);
-  } else {
-    // node.js -- don't care about being that efficient
-    output = new Buffer(input);
-  }
-
-  return output;
-}
-
-function randomBytes(len) {
-  return new Buffer(forge.random.getBytes(len), "binary");
-}
-
-util = {
-  base64url: require("./base64url.js"),
-  utf8: require("./utf8.js"),
-  asBuffer: asBuffer,
-  randomBytes: randomBytes
-};
-module.exports = util;
-
-}).call(this,require("buffer").Buffer)
-},{"../deps/forge.js":103,"./base64url.js":126,"./utf8.js":130,"buffer":140}],129:[function(require,module,exports){
-(function (Buffer){
-/*!
- * util/utf8.js - Implementation of UTF-8 Encoder/Decoder
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var partialRight = require("lodash.partialright"),
-    merge = require("lodash.merge");
-
-var typedArrayCtors = (function() {
-  var ctors = [];
-  if ("undefined" !== typeof Uint8Array) {
-    ctors.push(Uint8Array);
-  }
-  if ("undefined" !== typeof Uint8ClampedArray) {
-    ctors.push(Uint8ClampedArray);
-  }
-  if ("undefined" !== typeof Uint16Array) {
-    ctors.push(Uint16Array);
-  }
-  if ("undefined" !== typeof Uint32Array) {
-    ctors.push(Uint32Array);
-  }
-  if ("undefined" !== typeof Float32Array) {
-    ctors.push(Float32Array);
-  }
-  if ("undefined" !== typeof Float64Array) {
-    ctors.push(Float64Array);
-  }
-  return ctors;
-})();
-
-function findTypedArrayFor(ta) {
-  var ctor;
-  for (var idx = 0; !ctor && typedArrayCtors.length > idx; idx++) {
-    if (ta instanceof typedArrayCtors[idx]) {
-      ctor = typedArrayCtors[idx];
-    }
-  }
-  return ctor;
-}
-
-function mergeBuffer(a, b) {
-  // TODO: should this be a copy, or the reference itself?
-  if (Buffer.isBuffer(b)) {
-    b = new Buffer(b);
-  } else {
-    var Ctor = findTypedArrayFor(b);
-    b = Ctor ?
-        new Ctor(b, b.byteOffset, b.byteLength) :
-        undefined;
-  }
-
-  // TODO: QUESTION: create a merged <whatever-a-is>??
-  // for now, a is b
-  a = b;
-
-  return b;
-}
-
-module.exports = partialRight(merge, mergeBuffer);
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":140,"lodash.merge":37,"lodash.partialright":40}],130:[function(require,module,exports){
-/*!
- * util/utf8.js - Implementation of UTF-8 Encoder/Decoder
- *
- * Copyright (c) 2015 Cisco Systems, Inc. See LICENSE file.
- */
-"use strict";
-
-var utf8 = exports;
-
-utf8.encode = function(input) {
-  var output = encodeURIComponent(input || "");
-  output = output.replace(/\%([0-9a-fA-F]{2})/g, function(m, code) {
-    code = parseInt(code, 16);
-    return String.fromCharCode(code);
-  });
-
-  return output;
-};
-utf8.decode = function(input) {
-  var output = (input || "").replace(/[\u0080-\u00ff]/g, function(m) {
-    var code = (0x100 | m.charCodeAt(0)).toString(16).substring(1);
-    return "%" + code;
-  });
-  output = decodeURIComponent(output);
-
-  return output;
-};
-
-},{}],131:[function(require,module,exports){
+},{"./asn1":165,"./md":171,"./md5":172,"./mgf":173,"./pem":177,"./pki":182,"./pss":185,"./rsa":187,"./sha1":188,"./sha256":189,"./util":192}],194:[function(require,module,exports){
+arguments[4][56][0].apply(exports,arguments)
+},{"dup":56}],195:[function(require,module,exports){
 
 module.exports = require('./lib/urlsafe-base64');
-},{"./lib/urlsafe-base64":132}],132:[function(require,module,exports){
+},{"./lib/urlsafe-base64":196}],196:[function(require,module,exports){
 (function (Buffer){
 /*!
  * urlsafe-base64
@@ -40145,7 +40322,7 @@ exports.validate = function validate(base64) {
 };
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":140}],133:[function(require,module,exports){
+},{"buffer":204}],197:[function(require,module,exports){
 (function (global){
 
 var rng;
@@ -40180,7 +40357,7 @@ module.exports = rng;
 
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],134:[function(require,module,exports){
+},{}],198:[function(require,module,exports){
 //     uuid.js
 //
 //     Copyright (c) 2010-2012 Robert Kieffer
@@ -40365,7 +40542,7 @@ uuid.unparse = unparse;
 
 module.exports = uuid;
 
-},{"./rng":133}],135:[function(require,module,exports){
+},{"./rng":197}],199:[function(require,module,exports){
 // http://wiki.commonjs.org/wiki/Unit_Testing/1.0
 //
 // THIS IS NOT TESTED NOR LIKELY TO WORK OUTSIDE V8!
@@ -40727,7 +40904,7 @@ var objectKeys = Object.keys || function (obj) {
   return keys;
 };
 
-},{"util/":173}],136:[function(require,module,exports){
+},{"util/":237}],200:[function(require,module,exports){
 var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 ;(function (exports) {
@@ -40853,9 +41030,9 @@ var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 	exports.fromByteArray = uint8ToBase64
 }(typeof exports === 'undefined' ? (this.base64js = {}) : exports))
 
-},{}],137:[function(require,module,exports){
+},{}],201:[function(require,module,exports){
 
-},{}],138:[function(require,module,exports){
+},{}],202:[function(require,module,exports){
 (function (process,Buffer){
 var msg = require('pako/lib/zlib/messages');
 var zstream = require('pako/lib/zlib/zstream');
@@ -41095,7 +41272,7 @@ Zlib.prototype._error = function(status) {
 exports.Zlib = Zlib;
 
 }).call(this,require('_process'),require("buffer").Buffer)
-},{"_process":159,"buffer":140,"pako/lib/zlib/constants":150,"pako/lib/zlib/deflate.js":152,"pako/lib/zlib/inflate.js":154,"pako/lib/zlib/messages":156,"pako/lib/zlib/zstream":158}],139:[function(require,module,exports){
+},{"_process":223,"buffer":204,"pako/lib/zlib/constants":214,"pako/lib/zlib/deflate.js":216,"pako/lib/zlib/inflate.js":218,"pako/lib/zlib/messages":220,"pako/lib/zlib/zstream":222}],203:[function(require,module,exports){
 (function (process,Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -41709,7 +41886,7 @@ util.inherits(InflateRaw, Zlib);
 util.inherits(Unzip, Zlib);
 
 }).call(this,require('_process'),require("buffer").Buffer)
-},{"./binding":138,"_process":159,"_stream_transform":168,"assert":135,"buffer":140,"util":173}],140:[function(require,module,exports){
+},{"./binding":202,"_process":223,"_stream_transform":232,"assert":199,"buffer":204,"util":237}],204:[function(require,module,exports){
 (function (global){
 /*!
  * The buffer module from node.js, for the browser.
@@ -43261,14 +43438,14 @@ function blitBuffer (src, dst, offset, length) {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"base64-js":136,"ieee754":144,"isarray":141}],141:[function(require,module,exports){
+},{"base64-js":200,"ieee754":208,"isarray":205}],205:[function(require,module,exports){
 var toString = {}.toString;
 
 module.exports = Array.isArray || function (arr) {
   return toString.call(arr) == '[object Array]';
 };
 
-},{}],142:[function(require,module,exports){
+},{}],206:[function(require,module,exports){
 (function (Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -43379,7 +43556,7 @@ function objectToString(o) {
 }
 
 }).call(this,{"isBuffer":require("../../is-buffer/index.js")})
-},{"../../is-buffer/index.js":146}],143:[function(require,module,exports){
+},{"../../is-buffer/index.js":210}],207:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -43682,7 +43859,7 @@ function isUndefined(arg) {
   return arg === void 0;
 }
 
-},{}],144:[function(require,module,exports){
+},{}],208:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = nBytes * 8 - mLen - 1
@@ -43768,7 +43945,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],145:[function(require,module,exports){
+},{}],209:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -43793,7 +43970,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],146:[function(require,module,exports){
+},{}],210:[function(require,module,exports){
 /**
  * Determine if an object is Buffer
  *
@@ -43812,12 +43989,12 @@ module.exports = function (obj) {
     ))
 }
 
-},{}],147:[function(require,module,exports){
+},{}],211:[function(require,module,exports){
 module.exports = Array.isArray || function (arr) {
   return Object.prototype.toString.call(arr) == '[object Array]';
 };
 
-},{}],148:[function(require,module,exports){
+},{}],212:[function(require,module,exports){
 'use strict';
 
 
@@ -43921,7 +44098,7 @@ exports.setTyped = function (on) {
 
 exports.setTyped(TYPED_OK);
 
-},{}],149:[function(require,module,exports){
+},{}],213:[function(require,module,exports){
 'use strict';
 
 // Note: adler32 takes 12% for level 0 and 2% for level 6.
@@ -43955,7 +44132,7 @@ function adler32(adler, buf, len, pos) {
 
 module.exports = adler32;
 
-},{}],150:[function(require,module,exports){
+},{}],214:[function(require,module,exports){
 module.exports = {
 
   /* Allowed flush values; see deflate() and inflate() below for details */
@@ -44004,7 +44181,7 @@ module.exports = {
   //Z_NULL:                 null // Use -1 or null inline, depending on var type
 };
 
-},{}],151:[function(require,module,exports){
+},{}],215:[function(require,module,exports){
 'use strict';
 
 // Note: we can't get significant speed boost here.
@@ -44047,7 +44224,7 @@ function crc32(crc, buf, len, pos) {
 
 module.exports = crc32;
 
-},{}],152:[function(require,module,exports){
+},{}],216:[function(require,module,exports){
 'use strict';
 
 var utils   = require('../utils/common');
@@ -45814,7 +45991,7 @@ exports.deflatePrime = deflatePrime;
 exports.deflateTune = deflateTune;
 */
 
-},{"../utils/common":148,"./adler32":149,"./crc32":151,"./messages":156,"./trees":157}],153:[function(require,module,exports){
+},{"../utils/common":212,"./adler32":213,"./crc32":215,"./messages":220,"./trees":221}],217:[function(require,module,exports){
 'use strict';
 
 // See state defs from inflate.js
@@ -46142,7 +46319,7 @@ module.exports = function inflate_fast(strm, start) {
   return;
 };
 
-},{}],154:[function(require,module,exports){
+},{}],218:[function(require,module,exports){
 'use strict';
 
 
@@ -47647,7 +47824,7 @@ exports.inflateSyncPoint = inflateSyncPoint;
 exports.inflateUndermine = inflateUndermine;
 */
 
-},{"../utils/common":148,"./adler32":149,"./crc32":151,"./inffast":153,"./inftrees":155}],155:[function(require,module,exports){
+},{"../utils/common":212,"./adler32":213,"./crc32":215,"./inffast":217,"./inftrees":219}],219:[function(require,module,exports){
 'use strict';
 
 
@@ -47976,7 +48153,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
   return 0;
 };
 
-},{"../utils/common":148}],156:[function(require,module,exports){
+},{"../utils/common":212}],220:[function(require,module,exports){
 'use strict';
 
 module.exports = {
@@ -47991,7 +48168,7 @@ module.exports = {
   '-6':   'incompatible version' /* Z_VERSION_ERROR (-6) */
 };
 
-},{}],157:[function(require,module,exports){
+},{}],221:[function(require,module,exports){
 'use strict';
 
 
@@ -49192,7 +49369,7 @@ exports._tr_flush_block  = _tr_flush_block;
 exports._tr_tally = _tr_tally;
 exports._tr_align = _tr_align;
 
-},{"../utils/common":148}],158:[function(require,module,exports){
+},{"../utils/common":212}],222:[function(require,module,exports){
 'use strict';
 
 
@@ -49223,7 +49400,7 @@ function ZStream() {
 
 module.exports = ZStream;
 
-},{}],159:[function(require,module,exports){
+},{}],223:[function(require,module,exports){
 // shim for using process in browser
 
 var process = module.exports = {};
@@ -49311,10 +49488,10 @@ process.chdir = function (dir) {
     throw new Error('process.chdir is not supported');
 };
 
-},{}],160:[function(require,module,exports){
+},{}],224:[function(require,module,exports){
 module.exports = require("./lib/_stream_duplex.js")
 
-},{"./lib/_stream_duplex.js":161}],161:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":225}],225:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -49407,7 +49584,7 @@ function forEach (xs, f) {
 }
 
 }).call(this,require('_process'))
-},{"./_stream_readable":163,"./_stream_writable":165,"_process":159,"core-util-is":142,"inherits":145}],162:[function(require,module,exports){
+},{"./_stream_readable":227,"./_stream_writable":229,"_process":223,"core-util-is":206,"inherits":209}],226:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -49455,7 +49632,7 @@ PassThrough.prototype._transform = function(chunk, encoding, cb) {
   cb(null, chunk);
 };
 
-},{"./_stream_transform":164,"core-util-is":142,"inherits":145}],163:[function(require,module,exports){
+},{"./_stream_transform":228,"core-util-is":206,"inherits":209}],227:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -50410,7 +50587,7 @@ function indexOf (xs, x) {
 }
 
 }).call(this,require('_process'))
-},{"./_stream_duplex":161,"_process":159,"buffer":140,"core-util-is":142,"events":143,"inherits":145,"isarray":147,"stream":170,"string_decoder/":171,"util":137}],164:[function(require,module,exports){
+},{"./_stream_duplex":225,"_process":223,"buffer":204,"core-util-is":206,"events":207,"inherits":209,"isarray":211,"stream":234,"string_decoder/":235,"util":201}],228:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -50621,7 +50798,7 @@ function done(stream, er) {
   return stream.push(null);
 }
 
-},{"./_stream_duplex":161,"core-util-is":142,"inherits":145}],165:[function(require,module,exports){
+},{"./_stream_duplex":225,"core-util-is":206,"inherits":209}],229:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -51102,10 +51279,10 @@ function endWritable(stream, state, cb) {
 }
 
 }).call(this,require('_process'))
-},{"./_stream_duplex":161,"_process":159,"buffer":140,"core-util-is":142,"inherits":145,"stream":170}],166:[function(require,module,exports){
+},{"./_stream_duplex":225,"_process":223,"buffer":204,"core-util-is":206,"inherits":209,"stream":234}],230:[function(require,module,exports){
 module.exports = require("./lib/_stream_passthrough.js")
 
-},{"./lib/_stream_passthrough.js":162}],167:[function(require,module,exports){
+},{"./lib/_stream_passthrough.js":226}],231:[function(require,module,exports){
 exports = module.exports = require('./lib/_stream_readable.js');
 exports.Stream = require('stream');
 exports.Readable = exports;
@@ -51114,13 +51291,13 @@ exports.Duplex = require('./lib/_stream_duplex.js');
 exports.Transform = require('./lib/_stream_transform.js');
 exports.PassThrough = require('./lib/_stream_passthrough.js');
 
-},{"./lib/_stream_duplex.js":161,"./lib/_stream_passthrough.js":162,"./lib/_stream_readable.js":163,"./lib/_stream_transform.js":164,"./lib/_stream_writable.js":165,"stream":170}],168:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":225,"./lib/_stream_passthrough.js":226,"./lib/_stream_readable.js":227,"./lib/_stream_transform.js":228,"./lib/_stream_writable.js":229,"stream":234}],232:[function(require,module,exports){
 module.exports = require("./lib/_stream_transform.js")
 
-},{"./lib/_stream_transform.js":164}],169:[function(require,module,exports){
+},{"./lib/_stream_transform.js":228}],233:[function(require,module,exports){
 module.exports = require("./lib/_stream_writable.js")
 
-},{"./lib/_stream_writable.js":165}],170:[function(require,module,exports){
+},{"./lib/_stream_writable.js":229}],234:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -51249,7 +51426,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":143,"inherits":145,"readable-stream/duplex.js":160,"readable-stream/passthrough.js":166,"readable-stream/readable.js":167,"readable-stream/transform.js":168,"readable-stream/writable.js":169}],171:[function(require,module,exports){
+},{"events":207,"inherits":209,"readable-stream/duplex.js":224,"readable-stream/passthrough.js":230,"readable-stream/readable.js":231,"readable-stream/transform.js":232,"readable-stream/writable.js":233}],235:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -51472,14 +51649,14 @@ function base64DetectIncompleteChar(buffer) {
   this.charLength = this.charReceived ? 3 : 0;
 }
 
-},{"buffer":140}],172:[function(require,module,exports){
+},{"buffer":204}],236:[function(require,module,exports){
 module.exports = function isBuffer(arg) {
   return arg && typeof arg === 'object'
     && typeof arg.copy === 'function'
     && typeof arg.fill === 'function'
     && typeof arg.readUInt8 === 'function';
 }
-},{}],173:[function(require,module,exports){
+},{}],237:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -52069,5 +52246,5 @@ function hasOwnProperty(obj, prop) {
 }
 
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./support/isBuffer":172,"_process":159,"inherits":145}]},{},[104])(104)
+},{"./support/isBuffer":236,"_process":223,"inherits":209}]},{},[28])(28)
 });
