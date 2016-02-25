@@ -1,6 +1,6 @@
 {
   "name": "node-jose-browserified",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Browserified node-jose",
   "main": "dist/node-jose.js",
   "authors": [
